@@ -66,6 +66,10 @@ export interface BotConfig {
   consecutiveMatchCount: number;
   pumpFunBuyAmountSol?: number;
   pumpFunMaxCurveProgress?: number;
+  dryRun: boolean;
+  maxOpenPositions: number;
+  maxDailyRaydiumBuys: number;
+  maxDailyPumpFunBuySol: number;
 }
 
 export class Bot {
@@ -79,6 +83,10 @@ export class Bot {
   private sellExecutionCount = 0;
   public readonly isWarp: boolean = false;
   public readonly isJito: boolean = false;
+  private readonly openPositions = new Set<string>();
+  private currentDay = this.getUtcDayKey();
+  private dailyRaydiumBuys = 0;
+  private dailyPumpFunBuyLamports = 0n;
 
   constructor(
     private readonly connection: Connection,
@@ -105,6 +113,11 @@ export class Bot {
   }
 
   async validate() {
+    if (this.config.dryRun) {
+      logger.warn('DRY_RUN is enabled, skipping startup wallet ATA validation and network execution.');
+      return true;
+    }
+
     try {
       await getAccount(this.connection, this.config.quoteAta, this.connection.commitment);
     } catch (error) {
@@ -122,6 +135,18 @@ export class Bot {
 
     if (this.config.useSnipeList && !this.snipeListCache?.isInList(poolState.baseMint.toString())) {
       logger.debug({ mint: poolState.baseMint.toString() }, `Skipping buy because token is not in a snipe list`);
+      return;
+    }
+    const baseMint = poolState.baseMint.toString();
+    this.resetDailyRiskCountersIfNeeded();
+    if (!this.canOpenNewPosition(baseMint)) {
+      return;
+    }
+    if (this.dailyRaydiumBuys >= this.config.maxDailyRaydiumBuys) {
+      logger.warn(
+        { maxDailyRaydiumBuys: this.config.maxDailyRaydiumBuys },
+        'Skipping buy because max daily Raydium buys limit was reached',
+      );
       return;
     }
 
@@ -178,6 +203,8 @@ export class Bot {
           );
 
           if (result.confirmed) {
+            this.openPositions.add(baseMint);
+            this.dailyRaydiumBuys++;
             logger.info(
               {
                 mint: poolState.baseMint.toString(),
@@ -264,6 +291,7 @@ export class Bot {
           );
 
           if (result.confirmed) {
+            this.openPositions.delete(rawAccount.mint.toString());
             logger.info(
               {
                 dex: `https://dexscreener.com/solana/${rawAccount.mint.toString()}?maker=${this.config.wallet.publicKey}`,
@@ -309,6 +337,19 @@ export class Bot {
     wallet: Keypair,
     direction: 'buy' | 'sell',
   ) {
+    if (this.config.dryRun) {
+      logger.info(
+        {
+          mint: poolKeys.baseMint.toString(),
+          direction,
+          amountIn: amountIn.toFixed(),
+          slippage,
+        },
+        'DRY_RUN: skipping on-chain Raydium swap transaction',
+      );
+      return { confirmed: true, signature: 'dry-run' };
+    }
+
     const slippagePercent = new Percent(slippage, 100);
     const poolInfo = await Liquidity.fetchInfo({
       connection: this.connection,
@@ -417,6 +458,10 @@ export class Bot {
       logger.debug({ mint: mintStr }, `Skipping pump.fun buy (not on snipe list)`);
       return;
     }
+    this.resetDailyRiskCountersIfNeeded();
+    if (!this.canOpenNewPosition(mintStr)) {
+      return;
+    }
 
     if (this.config.oneTokenAtATime) {
       if (this.mutex.isLocked() || this.sellExecutionCount > 0) {
@@ -454,6 +499,18 @@ export class Bot {
       }
 
       const solInLamports = BigInt(Math.floor((this.config.pumpFunBuyAmountSol ?? 0.001) * 1_000_000_000));
+      const nextDailyPumpFunTotal = this.dailyPumpFunBuyLamports + solInLamports;
+      const maxDailyPumpFunLamports = BigInt(Math.floor(this.config.maxDailyPumpFunBuySol * 1_000_000_000));
+      if (nextDailyPumpFunTotal > maxDailyPumpFunLamports) {
+        logger.warn(
+          {
+            mint: mintStr,
+            maxDailyPumpFunBuySol: this.config.maxDailyPumpFunBuySol,
+          },
+          `Skipping pump.fun buy because max daily SOL budget was reached`,
+        );
+        return;
+      }
       const expectedTokens = computeTokensOutForSol(curve, solInLamports);
       if (expectedTokens <= 0n) {
         logger.debug({ mint: mintStr }, `Expected tokens out is zero`);
@@ -487,6 +544,8 @@ export class Bot {
           });
 
           if (result.confirmed) {
+            this.openPositions.add(mintStr);
+            this.dailyPumpFunBuyLamports = nextDailyPumpFunTotal;
             logger.info(
               {
                 mint: mintStr,
@@ -558,6 +617,7 @@ export class Bot {
           });
 
           if (result.confirmed) {
+            this.openPositions.delete(mintStr);
             logger.info(
               {
                 mint: mintStr,
@@ -590,6 +650,11 @@ export class Bot {
     amount: bigint;
     maxSolCost: bigint;
   }) {
+    if (this.config.dryRun) {
+      logger.info({ mint: params.mint.toString() }, 'DRY_RUN: skipping on-chain pump.fun buy transaction');
+      return { confirmed: true, signature: 'dry-run' };
+    }
+
     const latestBlockhash = await this.connection.getLatestBlockhash();
     const ixs = [
       ...(this.isWarp || this.isJito
@@ -632,6 +697,11 @@ export class Bot {
     amount: bigint;
     minSolOutput: bigint;
   }) {
+    if (this.config.dryRun) {
+      logger.info({ mint: params.mint.toString() }, 'DRY_RUN: skipping on-chain pump.fun sell transaction');
+      return { confirmed: true, signature: 'dry-run' };
+    }
+
     const latestBlockhash = await this.connection.getLatestBlockhash();
     const ixs = [
       ...(this.isWarp || this.isJito
@@ -744,5 +814,33 @@ export class Bot {
         timesChecked++;
       }
     } while (timesChecked < timesToCheck);
+  }
+
+  private canOpenNewPosition(mint: string): boolean {
+    if (this.openPositions.has(mint)) {
+      return true;
+    }
+    if (this.openPositions.size >= this.config.maxOpenPositions) {
+      logger.warn(
+        { maxOpenPositions: this.config.maxOpenPositions, openPositions: this.openPositions.size, mint },
+        'Skipping buy because max open positions limit was reached',
+      );
+      return false;
+    }
+    return true;
+  }
+
+  private resetDailyRiskCountersIfNeeded(): void {
+    const nowDay = this.getUtcDayKey();
+    if (nowDay === this.currentDay) return;
+
+    this.currentDay = nowDay;
+    this.dailyRaydiumBuys = 0;
+    this.dailyPumpFunBuyLamports = 0n;
+    logger.info('Daily risk counters reset');
+  }
+
+  private getUtcDayKey(): string {
+    return new Date().toISOString().slice(0, 10);
   }
 }

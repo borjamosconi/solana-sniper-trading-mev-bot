@@ -14,59 +14,106 @@ const retrieveEnvVariable = (variableName: string, logger: Logger) => {
   return variable;
 };
 
+const parseBoolean = (variableName: string, fallback?: boolean): boolean => {
+  const value = process.env[variableName];
+  if (value === undefined || value === '') {
+    if (fallback !== undefined) {
+      return fallback;
+    }
+    logger.error(`${variableName} is not set`);
+    process.exit(1);
+  }
+
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  logger.error(`${variableName} must be "true" or "false", received "${value}"`);
+  process.exit(1);
+};
+
+const parseNumber = (variableName: string, fallback?: number, min?: number): number => {
+  const value = process.env[variableName];
+  const raw = value === undefined || value === '' ? fallback?.toString() : value;
+  if (raw === undefined) {
+    logger.error(`${variableName} is not set`);
+    process.exit(1);
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    logger.error(`${variableName} must be a valid number, received "${raw}"`);
+    process.exit(1);
+  }
+  if (min !== undefined && parsed < min) {
+    logger.error(`${variableName} must be >= ${min}, received ${parsed}`);
+    process.exit(1);
+  }
+  return parsed;
+};
+
+const parseCommitment = (value: string): Commitment => {
+  if (value === 'processed' || value === 'confirmed' || value === 'finalized') {
+    return value;
+  }
+  logger.error(`COMMITMENT_LEVEL must be one of processed|confirmed|finalized, received "${value}"`);
+  process.exit(1);
+};
+
 // Wallet
 export const PRIVATE_KEY = retrieveEnvVariable('PRIVATE_KEY', logger);
 
 // Connection
 export const NETWORK = 'mainnet-beta';
-export const COMMITMENT_LEVEL: Commitment = retrieveEnvVariable('COMMITMENT_LEVEL', logger) as Commitment;
+export const COMMITMENT_LEVEL: Commitment = parseCommitment(retrieveEnvVariable('COMMITMENT_LEVEL', logger));
 export const RPC_ENDPOINT = retrieveEnvVariable('RPC_ENDPOINT', logger);
 export const RPC_WEBSOCKET_ENDPOINT = retrieveEnvVariable('RPC_WEBSOCKET_ENDPOINT', logger);
 
 // Bot
 export const LOG_LEVEL = retrieveEnvVariable('LOG_LEVEL', logger);
-export const ONE_TOKEN_AT_A_TIME = retrieveEnvVariable('ONE_TOKEN_AT_A_TIME', logger) === 'true';
-export const COMPUTE_UNIT_LIMIT = Number(retrieveEnvVariable('COMPUTE_UNIT_LIMIT', logger));
-export const COMPUTE_UNIT_PRICE = Number(retrieveEnvVariable('COMPUTE_UNIT_PRICE', logger));
-export const PRE_LOAD_EXISTING_MARKETS = retrieveEnvVariable('PRE_LOAD_EXISTING_MARKETS', logger) === 'true';
-export const CACHE_NEW_MARKETS = retrieveEnvVariable('CACHE_NEW_MARKETS', logger) === 'true';
+export const ONE_TOKEN_AT_A_TIME = parseBoolean('ONE_TOKEN_AT_A_TIME');
+export const COMPUTE_UNIT_LIMIT = parseNumber('COMPUTE_UNIT_LIMIT', undefined, 1);
+export const COMPUTE_UNIT_PRICE = parseNumber('COMPUTE_UNIT_PRICE', undefined, 0);
+export const PRE_LOAD_EXISTING_MARKETS = parseBoolean('PRE_LOAD_EXISTING_MARKETS');
+export const CACHE_NEW_MARKETS = parseBoolean('CACHE_NEW_MARKETS');
 export const TRANSACTION_EXECUTOR = retrieveEnvVariable('TRANSACTION_EXECUTOR', logger);
 export const CUSTOM_FEE = retrieveEnvVariable('CUSTOM_FEE', logger);
+export const DRY_RUN = parseBoolean('DRY_RUN', false);
+export const MAX_OPEN_POSITIONS = parseNumber('MAX_OPEN_POSITIONS', 3, 1);
+export const MAX_DAILY_RAYDIUM_BUYS = parseNumber('MAX_DAILY_RAYDIUM_BUYS', 20, 1);
+export const MAX_DAILY_PUMPFUN_BUY_SOL = parseNumber('MAX_DAILY_PUMPFUN_BUY_SOL', 0.05, 0);
 
 // Buy
-export const AUTO_BUY_DELAY = Number(retrieveEnvVariable('AUTO_BUY_DELAY', logger));
+export const AUTO_BUY_DELAY = parseNumber('AUTO_BUY_DELAY', undefined, 0);
 export const QUOTE_MINT = retrieveEnvVariable('QUOTE_MINT', logger);
 export const QUOTE_AMOUNT = retrieveEnvVariable('QUOTE_AMOUNT', logger);
-export const MAX_BUY_RETRIES = Number(retrieveEnvVariable('MAX_BUY_RETRIES', logger));
-export const BUY_SLIPPAGE = Number(retrieveEnvVariable('BUY_SLIPPAGE', logger));
+export const MAX_BUY_RETRIES = parseNumber('MAX_BUY_RETRIES', undefined, 1);
+export const BUY_SLIPPAGE = parseNumber('BUY_SLIPPAGE', undefined, 0);
 
 // Sell
-export const AUTO_SELL = retrieveEnvVariable('AUTO_SELL', logger) === 'true';
-export const AUTO_SELL_DELAY = Number(retrieveEnvVariable('AUTO_SELL_DELAY', logger));
-export const MAX_SELL_RETRIES = Number(retrieveEnvVariable('MAX_SELL_RETRIES', logger));
-export const TAKE_PROFIT = Number(retrieveEnvVariable('TAKE_PROFIT', logger));
-export const STOP_LOSS = Number(retrieveEnvVariable('STOP_LOSS', logger));
-export const PRICE_CHECK_INTERVAL = Number(retrieveEnvVariable('PRICE_CHECK_INTERVAL', logger));
-export const PRICE_CHECK_DURATION = Number(retrieveEnvVariable('PRICE_CHECK_DURATION', logger));
-export const SELL_SLIPPAGE = Number(retrieveEnvVariable('SELL_SLIPPAGE', logger));
+export const AUTO_SELL = parseBoolean('AUTO_SELL');
+export const AUTO_SELL_DELAY = parseNumber('AUTO_SELL_DELAY', undefined, 0);
+export const MAX_SELL_RETRIES = parseNumber('MAX_SELL_RETRIES', undefined, 1);
+export const TAKE_PROFIT = parseNumber('TAKE_PROFIT', undefined, 0);
+export const STOP_LOSS = parseNumber('STOP_LOSS', undefined, 0);
+export const PRICE_CHECK_INTERVAL = parseNumber('PRICE_CHECK_INTERVAL', undefined, 0);
+export const PRICE_CHECK_DURATION = parseNumber('PRICE_CHECK_DURATION', undefined, 0);
+export const SELL_SLIPPAGE = parseNumber('SELL_SLIPPAGE', undefined, 0);
 
 // Filters
-export const FILTER_CHECK_INTERVAL = Number(retrieveEnvVariable('FILTER_CHECK_INTERVAL', logger));
-export const FILTER_CHECK_DURATION = Number(retrieveEnvVariable('FILTER_CHECK_DURATION', logger));
-export const CONSECUTIVE_FILTER_MATCHES = Number(retrieveEnvVariable('CONSECUTIVE_FILTER_MATCHES', logger));
-export const CHECK_IF_MUTABLE = retrieveEnvVariable('CHECK_IF_MUTABLE', logger) === 'true';
-export const CHECK_IF_SOCIALS = retrieveEnvVariable('CHECK_IF_SOCIALS', logger) === 'true';
-export const CHECK_IF_MINT_IS_RENOUNCED = retrieveEnvVariable('CHECK_IF_MINT_IS_RENOUNCED', logger) === 'true';
-export const CHECK_IF_FREEZABLE = retrieveEnvVariable('CHECK_IF_FREEZABLE', logger) === 'true';
-export const CHECK_IF_BURNED = retrieveEnvVariable('CHECK_IF_BURNED', logger) === 'true';
+export const FILTER_CHECK_INTERVAL = parseNumber('FILTER_CHECK_INTERVAL', undefined, 0);
+export const FILTER_CHECK_DURATION = parseNumber('FILTER_CHECK_DURATION', undefined, 0);
+export const CONSECUTIVE_FILTER_MATCHES = parseNumber('CONSECUTIVE_FILTER_MATCHES', undefined, 1);
+export const CHECK_IF_MUTABLE = parseBoolean('CHECK_IF_MUTABLE');
+export const CHECK_IF_SOCIALS = parseBoolean('CHECK_IF_SOCIALS');
+export const CHECK_IF_MINT_IS_RENOUNCED = parseBoolean('CHECK_IF_MINT_IS_RENOUNCED');
+export const CHECK_IF_FREEZABLE = parseBoolean('CHECK_IF_FREEZABLE');
+export const CHECK_IF_BURNED = parseBoolean('CHECK_IF_BURNED');
 export const MIN_POOL_SIZE = retrieveEnvVariable('MIN_POOL_SIZE', logger);
 export const MAX_POOL_SIZE = retrieveEnvVariable('MAX_POOL_SIZE', logger);
-export const USE_SNIPE_LIST = retrieveEnvVariable('USE_SNIPE_LIST', logger) === 'true';
-export const SNIPE_LIST_REFRESH_INTERVAL = Number(retrieveEnvVariable('SNIPE_LIST_REFRESH_INTERVAL', logger));
+export const USE_SNIPE_LIST = parseBoolean('USE_SNIPE_LIST');
+export const SNIPE_LIST_REFRESH_INTERVAL = parseNumber('SNIPE_LIST_REFRESH_INTERVAL', undefined, 1);
 
 // Pump.fun
-const pumpFlag = process.env.ENABLE_PUMP_FUN;
-export const ENABLE_PUMP_FUN = pumpFlag === 'true';
-export const ENABLE_RAYDIUM = (process.env.ENABLE_RAYDIUM ?? 'true') === 'true';
-export const PUMP_FUN_BUY_AMOUNT_SOL = Number(process.env.PUMP_FUN_BUY_AMOUNT_SOL ?? '0.001');
-export const PUMP_FUN_MAX_CURVE_PROGRESS = Number(process.env.PUMP_FUN_MAX_CURVE_PROGRESS ?? '100'); // %; skip if curve already filled beyond this
+export const ENABLE_PUMP_FUN = parseBoolean('ENABLE_PUMP_FUN', false);
+export const ENABLE_RAYDIUM = parseBoolean('ENABLE_RAYDIUM', true);
+export const PUMP_FUN_BUY_AMOUNT_SOL = parseNumber('PUMP_FUN_BUY_AMOUNT_SOL', 0.001, 0);
+export const PUMP_FUN_MAX_CURVE_PROGRESS = parseNumber('PUMP_FUN_MAX_CURVE_PROGRESS', 100, 0); // %; skip if curve already filled beyond this

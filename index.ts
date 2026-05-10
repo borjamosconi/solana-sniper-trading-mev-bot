@@ -50,6 +50,10 @@ import {
   PUMP_FUN_BUY_AMOUNT_SOL,
   PUMP_FUN_MAX_CURVE_PROGRESS,
   PUMP_FUN_PROGRAM_ID,
+  DRY_RUN,
+  MAX_OPEN_POSITIONS,
+  MAX_DAILY_RAYDIUM_BUYS,
+  MAX_DAILY_PUMPFUN_BUY_SOL,
 } from './helpers';
 import { version } from './package.json';
 import { WarpTransactionExecutor } from './transactions/warp-transaction-executor';
@@ -97,6 +101,10 @@ function printDetails(wallet: Keypair, quoteToken: Token, bot: Bot) {
   }
 
   logger.info(`Single token at the time: ${botConfig.oneTokenAtATime}`);
+  logger.info(`Dry run mode: ${botConfig.dryRun}`);
+  logger.info(`Max open positions: ${botConfig.maxOpenPositions}`);
+  logger.info(`Max daily Raydium buys: ${botConfig.maxDailyRaydiumBuys}`);
+  logger.info(`Max daily pump.fun buy SOL: ${botConfig.maxDailyPumpFunBuySol}`);
   logger.info(`Pre load existing markets: ${PRE_LOAD_EXISTING_MARKETS}`);
   logger.info(`Cache new markets: ${CACHE_NEW_MARKETS}`);
   logger.info(`Log level: ${LOG_LEVEL}`);
@@ -198,6 +206,10 @@ const runListener = async () => {
     consecutiveMatchCount: CONSECUTIVE_FILTER_MATCHES,
     pumpFunBuyAmountSol: PUMP_FUN_BUY_AMOUNT_SOL,
     pumpFunMaxCurveProgress: PUMP_FUN_MAX_CURVE_PROGRESS,
+    dryRun: DRY_RUN,
+    maxOpenPositions: MAX_OPEN_POSITIONS,
+    maxDailyRaydiumBuys: MAX_DAILY_RAYDIUM_BUYS,
+    maxDailyPumpFunBuySol: MAX_DAILY_PUMPFUN_BUY_SOL,
   };
 
   const bot = new Bot(connection, marketCache, poolCache, txExecutor, botConfig, pumpFunCache);

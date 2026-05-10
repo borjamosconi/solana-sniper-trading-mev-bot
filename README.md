@@ -16,6 +16,8 @@ An automated **Solana sniping bot** that trades newly-listed tokens on **Raydium
 - 📈 **Auto-sell** — take-profit / stop-loss polling against live pool state for both Raydium and pump.fun.
 - 🔒 **Concurrency guard** — `ONE_TOKEN_AT_A_TIME` mode via mutex to avoid fighting yourself across new pools.
 - 🔁 **Retries** — configurable retry counts for buy and sell transactions.
+- 🧪 **Dry-run mode** — simulate trades and log decisions without sending on-chain transactions.
+- 🚦 **Risk caps** — max open positions + daily buy limits for Raydium and pump.fun.
 
 ---
 
@@ -90,7 +92,7 @@ All settings live in `.env`. Copy from `.env.copy` and edit.
 
 | Var | Example | Notes |
 |-----|---------|-------|
-| `PRIVATE_KEY` | `base58 / [n,...] / mnemonic` | Three accepted formats. Keep secret. |
+| `PRIVATE_KEY` | `base58 / [n,...] / mnemonic / hex` | Accepted formats: base58, JSON array, mnemonic, or 64/128-char hex. Keep secret. |
 | `RPC_ENDPOINT` | `https://...` | HTTPS RPC. Use a paid provider. |
 | `RPC_WEBSOCKET_ENDPOINT` | `wss://...` | WebSocket RPC. |
 | `COMMITMENT_LEVEL` | `confirmed` | `processed`, `confirmed`, or `finalized`. |
@@ -107,6 +109,10 @@ All settings live in `.env`. Copy from `.env.copy` and edit.
 | `COMPUTE_UNIT_LIMIT` | `101337` | `default` executor only. |
 | `COMPUTE_UNIT_PRICE` | `421197` | micro-lamports, `default` executor only. |
 | `CUSTOM_FEE` | `0.006` | SOL; for `warp` / `jito` executors. |
+| `DRY_RUN` | `false` | If `true`, no transaction is broadcast; decisions are logged only. |
+| `MAX_OPEN_POSITIONS` | `3` | Max concurrent positions tracked by the bot. |
+| `MAX_DAILY_RAYDIUM_BUYS` | `20` | Successful Raydium buy cap per UTC day. |
+| `MAX_DAILY_PUMPFUN_BUY_SOL` | `0.05` | Total SOL budget for pump.fun buys per UTC day. |
 
 ### Buy
 
@@ -209,6 +215,7 @@ Sends a Jito bundle to all 5 block-engine regions (mainnet, amsterdam, frankfurt
 - [ ] Use a **dedicated wallet** funded only with what you're willing to lose.
 - [ ] Keep `.env` out of version control (`.gitignore` already excludes it).
 - [ ] Start with tiny amounts (`QUOTE_AMOUNT=0.001`, `PUMP_FUN_BUY_AMOUNT_SOL=0.001`).
+- [ ] For first runs, set `DRY_RUN=true` to verify behavior before risking funds.
 - [ ] Use a paid RPC; free endpoints will miss fills.
 - [ ] Test `ENABLE_RAYDIUM=false ENABLE_PUMP_FUN=true` or vice versa in isolation first.
 - [ ] Monitor logs actively — `LOG_LEVEL=trace` is verbose but informative.
