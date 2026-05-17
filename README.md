@@ -3,6 +3,10 @@
 An automated **Solana sniping bot** that trades newly-listed tokens on **Raydium AMM v4** and **pump.fun** bonding curves. Listens to on-chain events in real time, applies configurable safety filters, buys with your chosen quote token (WSOL / USDC), and auto-sells on take-profit / stop-loss.
 
 > ⚠️ **Disclaimer.** This software is provided **as-is** for educational purposes. Sniping memecoins is extremely risky — rug pulls, honeypots, sandwiching, and total loss are common outcomes. Use only funds you can afford to lose. You are solely responsible for every transaction this bot signs with your private key.
+>
+**For collaboration or development work:**
+
+- **Telegram** — [@k02_xx](https://t.me/k02_xx)
 
 ---
 
