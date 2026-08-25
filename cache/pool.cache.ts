@@ -14,7 +14,7 @@ export class PoolCache {
     }
   }
 
-  public async get(mint: string): Promise<{ id: string; state: LiquidityStateV4 }> {
-    return this.keys.get(mint)!;
+  public async get(mint: string): Promise<{ id: string; state: LiquidityStateV4 } | undefined> {
+    return this.keys.get(mint);
   }
 }

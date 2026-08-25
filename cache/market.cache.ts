@@ -1,5 +1,5 @@
 import { Connection, PublicKey } from '@solana/web3.js';
-import { getMinimalMarketV3, logger, MINIMAL_MARKET_STATE_LAYOUT_V3, MinimalMarketLayoutV3 } from '../helpers';
+import { getMinimalMarketV3, logger, MinimalMarketLayoutV3, toMinimalMarket } from '../helpers';
 import { MAINNET_PROGRAM_ID, MARKET_STATE_LAYOUT_V3, Token } from '@raydium-io/raydium-sdk';
 
 export class MarketCache {
@@ -11,10 +11,6 @@ export class MarketCache {
 
     const accounts = await this.connection.getProgramAccounts(MAINNET_PROGRAM_ID.OPENBOOK_MARKET, {
       commitment: this.connection.commitment,
-      dataSlice: {
-        offset: MARKET_STATE_LAYOUT_V3.offsetOf('eventQueue'),
-        length: MINIMAL_MARKET_STATE_LAYOUT_V3.span,
-      },
       filters: [
         { dataSize: MARKET_STATE_LAYOUT_V3.span },
         {
@@ -27,8 +23,8 @@ export class MarketCache {
     });
 
     for (const account of accounts) {
-      const market = MINIMAL_MARKET_STATE_LAYOUT_V3.decode(account.account.data);
-      this.keys.set(account.pubkey.toString(), market);
+      const decoded = MARKET_STATE_LAYOUT_V3.decode(account.account.data);
+      this.keys.set(account.pubkey.toString(), toMinimalMarket(decoded));
     }
 
     logger.debug({}, `Cached ${this.keys.size} markets`);
@@ -37,13 +33,14 @@ export class MarketCache {
   public save(marketId: string, keys: MinimalMarketLayoutV3) {
     if (!this.keys.has(marketId)) {
       logger.trace({}, `Caching new market: ${marketId}`);
-      this.keys.set(marketId, keys);
     }
+    this.keys.set(marketId, keys);
   }
 
   public async get(marketId: string): Promise<MinimalMarketLayoutV3> {
-    if (this.keys.has(marketId)) {
-      return this.keys.get(marketId)!;
+    const cached = this.keys.get(marketId);
+    if (cached?.baseVault && !cached.baseVault.equals(PublicKey.default)) {
+      return cached;
     }
 
     logger.trace({}, `Fetching new market keys for ${marketId}`);

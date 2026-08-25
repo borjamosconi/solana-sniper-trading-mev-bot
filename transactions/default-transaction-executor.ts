@@ -6,7 +6,7 @@ import {
   VersionedTransaction,
 } from '@solana/web3.js';
 import { TransactionExecutor } from './transaction-executor.interface';
-import { logger } from '../helpers';
+import { logger, SKIP_PREFLIGHT } from '../helpers';
 
 export class DefaultTransactionExecutor implements TransactionExecutor {
   constructor(private readonly connection: Connection) {}
@@ -15,7 +15,7 @@ export class DefaultTransactionExecutor implements TransactionExecutor {
     transaction: VersionedTransaction,
     payer: Keypair,
     latestBlockhash: BlockhashWithExpiryBlockHeight,
-  ): Promise<{ confirmed: boolean; signature?: string, error?: string }> {
+  ): Promise<{ confirmed: boolean; signature?: string; error?: string }> {
     logger.debug('Executing transaction...');
     const signature = await this.execute(transaction);
 
@@ -25,7 +25,9 @@ export class DefaultTransactionExecutor implements TransactionExecutor {
 
   private async execute(transaction: Transaction | VersionedTransaction) {
     return this.connection.sendRawTransaction(transaction.serialize(), {
+      skipPreflight: SKIP_PREFLIGHT,
       preflightCommitment: this.connection.commitment,
+      maxRetries: 3,
     });
   }
 
@@ -39,6 +41,14 @@ export class DefaultTransactionExecutor implements TransactionExecutor {
       this.connection.commitment,
     );
 
-    return { confirmed: !confirmation.value.err, signature };
+    if (confirmation.value.err) {
+      return {
+        confirmed: false,
+        signature,
+        error: JSON.stringify(confirmation.value.err),
+      };
+    }
+
+    return { confirmed: true, signature };
   }
 }

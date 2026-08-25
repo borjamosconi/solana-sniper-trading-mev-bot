@@ -2,7 +2,7 @@ import { MarketCache, PoolCache, PumpFunCache } from './cache';
 import { Listeners } from './listeners';
 import { Connection, KeyedAccountInfo, Keypair, Logs, PublicKey } from '@solana/web3.js';
 import { LIQUIDITY_STATE_LAYOUT_V4, MARKET_STATE_LAYOUT_V3, Token, TokenAmount } from '@raydium-io/raydium-sdk';
-import { AccountLayout, getAssociatedTokenAddressSync } from '@solana/spl-token';
+import { AccountLayout, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { Bot, BotConfig } from './bot';
 import { DefaultTransactionExecutor, TransactionExecutor } from './transactions';
 import {
@@ -14,7 +14,6 @@ import {
   RPC_WEBSOCKET_ENDPOINT,
   PRE_LOAD_EXISTING_MARKETS,
   LOG_LEVEL,
-  CHECK_IF_MUTABLE,
   CHECK_IF_MINT_IS_RENOUNCED,
   CHECK_IF_FREEZABLE,
   CHECK_IF_BURNED,
@@ -54,10 +53,41 @@ import {
   MAX_OPEN_POSITIONS,
   MAX_DAILY_RAYDIUM_BUYS,
   MAX_DAILY_PUMPFUN_BUY_SOL,
+  TRAILING_STOP,
+  TRAILING_STOP_ACTIVATION,
+  TAKE_PROFIT_SELL_PERCENT,
+  BUY_COOLDOWN_MS,
+  DYNAMIC_PRIORITY_FEE,
+  PRIORITY_FEE_MULTIPLIER,
+  MAX_COMPUTE_UNIT_PRICE,
+  SIMULATE_BEFORE_SEND,
+  ENABLE_JUPITER_SELL,
+  ENABLE_JUPITER_COPY_BUY,
+  JUPITER_API_URL,
+  JUPITER_API_KEY,
+  CIRCUIT_BREAKER_MAX_FAILURES,
+  CIRCUIT_BREAKER_PAUSE_MS,
+  ENABLE_COPY_TRADE,
+  COPY_WALLETS,
+  ENABLE_ARBITRAGE,
+  ARB_INTERVAL_MS,
+  ARB_AMOUNT_SOL,
+  ARB_MIN_PROFIT_BPS,
+  ARB_SLIPPAGE_BPS,
+  ARB_MAX_DAILY_SOL,
+  ARB_PAIRS,
+  ARB_DEX_GROUP_A,
+  ARB_DEX_GROUP_B,
+  CHECK_TOP_HOLDER,
+  MAX_TOP_HOLDER_PERCENT,
+  JupiterClient,
+  toMinimalMarket,
 } from './helpers';
 import { version } from './package.json';
 import { WarpTransactionExecutor } from './transactions/warp-transaction-executor';
 import { JitoTransactionExecutor } from './transactions/jito-rpc-transaction-executor';
+import { CircuitBreaker } from './risk';
+import { ArbitrageEngine } from './arbitrage';
 
 const connection = new Connection(RPC_ENDPOINT, {
   wsEndpoint: RPC_WEBSOCKET_ENDPOINT,
@@ -89,19 +119,20 @@ function printDetails(wallet: Keypair, quoteToken: Token, bot: Bot) {
   logger.info(`Wallet: ${wallet.publicKey.toString()}`);
 
   logger.info('- Bot -');
-
   logger.info(
-    `Using ${TRANSACTION_EXECUTOR} executer: ${bot.isWarp || bot.isJito || (TRANSACTION_EXECUTOR === 'default' ? true : false)}`,
+    `Using ${TRANSACTION_EXECUTOR} executer: ${bot.isWarp || bot.isJito || TRANSACTION_EXECUTOR === 'default'}`,
   );
   if (bot.isWarp || bot.isJito) {
     logger.info(`${TRANSACTION_EXECUTOR} fee: ${CUSTOM_FEE}`);
   } else {
     logger.info(`Compute Unit limit: ${botConfig.unitLimit}`);
     logger.info(`Compute Unit price (micro lamports): ${botConfig.unitPrice}`);
+    logger.info(`Dynamic priority fee: ${botConfig.dynamicPriorityFee} x${botConfig.priorityFeeMultiplier}`);
   }
 
   logger.info(`Single token at the time: ${botConfig.oneTokenAtATime}`);
   logger.info(`Dry run mode: ${botConfig.dryRun}`);
+  logger.info(`Simulate before send: ${botConfig.simulateBeforeSend}`);
   logger.info(`Max open positions: ${botConfig.maxOpenPositions}`);
   logger.info(`Max daily Raydium buys: ${botConfig.maxDailyRaydiumBuys}`);
   logger.info(`Max daily pump.fun buy SOL: ${botConfig.maxDailyPumpFunBuySol}`);
@@ -113,18 +144,18 @@ function printDetails(wallet: Keypair, quoteToken: Token, bot: Bot) {
   logger.info(`Buy amount: ${botConfig.quoteAmount.toFixed()} ${botConfig.quoteToken.name}`);
   logger.info(`Auto buy delay: ${botConfig.autoBuyDelay} ms`);
   logger.info(`Max buy retries: ${botConfig.maxBuyRetries}`);
-  logger.info(`Buy amount (${quoteToken.symbol}): ${botConfig.quoteAmount.toFixed()}`);
   logger.info(`Buy slippage: ${botConfig.buySlippage}%`);
+  logger.info(`Buy cooldown: ${botConfig.buyCooldownMs} ms`);
 
-  logger.info('- Sell -');
+  logger.info('- Sell / exits -');
   logger.info(`Auto sell: ${AUTO_SELL}`);
   logger.info(`Auto sell delay: ${botConfig.autoSellDelay} ms`);
   logger.info(`Max sell retries: ${botConfig.maxSellRetries}`);
   logger.info(`Sell slippage: ${botConfig.sellSlippage}%`);
-  logger.info(`Price check interval: ${botConfig.priceCheckInterval} ms`);
-  logger.info(`Price check duration: ${botConfig.priceCheckDuration} ms`);
-  logger.info(`Take profit: ${botConfig.takeProfit}%`);
+  logger.info(`Take profit: ${botConfig.takeProfit}% (sell ${botConfig.takeProfitSellPercent}%)`);
   logger.info(`Stop loss: ${botConfig.stopLoss}%`);
+  logger.info(`Trailing stop: ${botConfig.trailingStop}% after +${botConfig.trailingStopActivation}%`);
+  logger.info(`Jupiter sell routing: ${botConfig.enableJupiterSell}`);
 
   logger.info('- Snipe list -');
   logger.info(`Snipe list: ${botConfig.useSnipeList}`);
@@ -141,12 +172,17 @@ function printDetails(wallet: Keypair, quoteToken: Token, bot: Bot) {
     logger.info(`Check renounced: ${botConfig.checkRenounced}`);
     logger.info(`Check freezable: ${botConfig.checkFreezable}`);
     logger.info(`Check burned: ${botConfig.checkBurned}`);
+    logger.info(`Check top holder: ${CHECK_TOP_HOLDER} (max ${MAX_TOP_HOLDER_PERCENT}%)`);
     logger.info(`Min pool size: ${botConfig.minPoolSize.toFixed()}`);
     logger.info(`Max pool size: ${botConfig.maxPoolSize.toFixed()}`);
   }
 
-  logger.info('------- CONFIGURATION END -------');
+  logger.info('- Modern modules -');
+  logger.info(`Copy trade: ${ENABLE_COPY_TRADE} wallets=${COPY_WALLETS.length}`);
+  logger.info(`Arbitrage: ${ENABLE_ARBITRAGE} pairs=${ARB_PAIRS.join(',')}`);
+  logger.info(`Jupiter URL: ${JUPITER_API_URL}`);
 
+  logger.info('------- CONFIGURATION END -------');
   logger.info('Bot is running! Press CTRL + C to stop it.');
 }
 
@@ -176,6 +212,9 @@ const runListener = async () => {
 
   const wallet = getWallet(PRIVATE_KEY.trim());
   const quoteToken = getToken(QUOTE_MINT);
+  const jupiter = new JupiterClient(JUPITER_API_URL, JUPITER_API_KEY || undefined);
+  const breaker = new CircuitBreaker(CIRCUIT_BREAKER_MAX_FAILURES, CIRCUIT_BREAKER_PAUSE_MS);
+
   const botConfig = <BotConfig>{
     wallet,
     quoteAta: getAssociatedTokenAddressSync(quoteToken.mint, wallet.publicKey),
@@ -210,9 +249,19 @@ const runListener = async () => {
     maxOpenPositions: MAX_OPEN_POSITIONS,
     maxDailyRaydiumBuys: MAX_DAILY_RAYDIUM_BUYS,
     maxDailyPumpFunBuySol: MAX_DAILY_PUMPFUN_BUY_SOL,
+    trailingStop: TRAILING_STOP,
+    trailingStopActivation: TRAILING_STOP_ACTIVATION,
+    takeProfitSellPercent: TAKE_PROFIT_SELL_PERCENT,
+    buyCooldownMs: BUY_COOLDOWN_MS,
+    dynamicPriorityFee: DYNAMIC_PRIORITY_FEE,
+    priorityFeeMultiplier: PRIORITY_FEE_MULTIPLIER,
+    maxComputeUnitPrice: MAX_COMPUTE_UNIT_PRICE,
+    simulateBeforeSend: SIMULATE_BEFORE_SEND,
+    enableJupiterSell: ENABLE_JUPITER_SELL,
+    enableJupiterCopyBuy: ENABLE_JUPITER_COPY_BUY,
   };
 
-  const bot = new Bot(connection, marketCache, poolCache, txExecutor, botConfig, pumpFunCache);
+  const bot = new Bot(connection, marketCache, poolCache, txExecutor, botConfig, pumpFunCache, jupiter, breaker);
   const valid = await bot.validate();
 
   if (!valid) {
@@ -224,6 +273,7 @@ const runListener = async () => {
     await marketCache.init({ quoteToken });
   }
 
+  const copyWallets = ENABLE_COPY_TRADE ? COPY_WALLETS.map((address) => new PublicKey(address)) : [];
   const runTimestamp = Math.floor(new Date().getTime() / 1000);
   const listeners = new Listeners(connection);
   await listeners.start({
@@ -233,11 +283,12 @@ const runListener = async () => {
     cacheNewMarkets: CACHE_NEW_MARKETS,
     enableRaydium: ENABLE_RAYDIUM,
     enablePumpFun: ENABLE_PUMP_FUN,
+    copyWallets,
   });
 
   listeners.on('market', (updatedAccountInfo: KeyedAccountInfo) => {
     const marketState = MARKET_STATE_LAYOUT_V3.decode(updatedAccountInfo.accountInfo.data);
-    marketCache.save(updatedAccountInfo.accountId.toString(), marketState);
+    marketCache.save(updatedAccountInfo.accountId.toString(), toMinimalMarket(marketState));
   });
 
   listeners.on('pool', async (updatedAccountInfo: KeyedAccountInfo) => {
@@ -266,6 +317,41 @@ const runListener = async () => {
     await bot.sell(updatedAccountInfo.accountId, accountData);
   });
 
+  const copyBalances = new Map<string, bigint>();
+  for (const copyWallet of copyWallets) {
+    try {
+      const existing = await connection.getTokenAccountsByOwner(copyWallet, { programId: TOKEN_PROGRAM_ID });
+      for (const account of existing.value) {
+        const data = AccountLayout.decode(account.account.data);
+        copyBalances.set(account.pubkey.toString(), BigInt(data.amount.toString()));
+      }
+      logger.info({ wallet: copyWallet.toBase58(), accounts: existing.value.length }, 'Seeded copy-trade balances');
+    } catch (error) {
+      logger.warn({ wallet: copyWallet.toBase58(), error }, 'Failed to seed copy-trade balances');
+    }
+  }
+  listeners.on('copy-trade', async (updatedAccountInfo: KeyedAccountInfo) => {
+    try {
+      const accountData = AccountLayout.decode(updatedAccountInfo.accountInfo.data);
+      if (accountData.mint.equals(quoteToken.mint)) return;
+
+      const key = updatedAccountInfo.accountId.toString();
+      const next = BigInt(accountData.amount.toString());
+      const previous = copyBalances.get(key) ?? 0n;
+      copyBalances.set(key, next);
+
+      if (next > previous) {
+        logger.info(
+          { mint: accountData.mint.toString(), source: updatedAccountInfo.accountId.toString() },
+          'Copy wallet accumulated a token',
+        );
+        await bot.copyBuy(accountData.mint);
+      }
+    } catch (error) {
+      logger.debug({ error }, 'Failed to handle copy-trade event');
+    }
+  });
+
   listeners.on('pumpfun-create', async (logs: Logs) => {
     try {
       const tx = await connection.getTransaction(logs.signature, {
@@ -284,7 +370,6 @@ const runListener = async () => {
       });
       if (!createIx) return;
 
-      // Create instruction account order: mint is index 0 of its account list
       const mintIdx = createIx.accountKeyIndexes[0];
       const mint = keys.get(mintIdx);
       if (!mint) return;
@@ -295,6 +380,34 @@ const runListener = async () => {
       logger.debug({ e }, 'Failed to handle pump.fun create');
     }
   });
+
+  const arbitrage = new ArbitrageEngine(
+    connection,
+    wallet,
+    jupiter,
+    txExecutor,
+    breaker,
+    {
+      enabled: ENABLE_ARBITRAGE,
+      intervalMs: ARB_INTERVAL_MS,
+      amountSol: ARB_AMOUNT_SOL,
+      minProfitBps: ARB_MIN_PROFIT_BPS,
+      maxDailySol: ARB_MAX_DAILY_SOL,
+      slippageBps: ARB_SLIPPAGE_BPS,
+      pairs: ARB_PAIRS,
+      dexGroupA: ARB_DEX_GROUP_A,
+      dexGroupB: ARB_DEX_GROUP_B,
+      dryRun: DRY_RUN,
+      simulateBeforeSend: SIMULATE_BEFORE_SEND,
+      shouldSkip: () => bot.isBusy(),
+    },
+    CUSTOM_FEE,
+  );
+  arbitrage.start();
+
+  setInterval(() => {
+    logger.info(bot.snapshot(), 'Heartbeat');
+  }, 60_000);
 
   printDetails(wallet, quoteToken, bot);
 };

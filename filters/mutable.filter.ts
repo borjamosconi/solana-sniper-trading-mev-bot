@@ -60,7 +60,16 @@ export class MutableFilter implements Filter {
 
   private async hasSocials(metadata: MetadataAccountData) {
     const response = await fetch(metadata.uri);
-    const data = await response.json();
-    return Object.values(data?.extensions ?? {}).some((value: any) => value !== null && value.length > 0);
+    const data = (await response.json()) as Record<string, unknown>;
+    const candidates = [
+      data.twitter,
+      data.telegram,
+      data.website,
+      data.discord,
+      data.createdOn,
+      ...(Object.values((data.extensions as Record<string, unknown> | undefined) ?? {})),
+    ];
+
+    return candidates.some((value) => typeof value === 'string' && value.trim().length > 0);
   }
 }

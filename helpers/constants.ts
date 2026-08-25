@@ -117,3 +117,49 @@ export const ENABLE_PUMP_FUN = parseBoolean('ENABLE_PUMP_FUN', false);
 export const ENABLE_RAYDIUM = parseBoolean('ENABLE_RAYDIUM', true);
 export const PUMP_FUN_BUY_AMOUNT_SOL = parseNumber('PUMP_FUN_BUY_AMOUNT_SOL', 0.001, 0);
 export const PUMP_FUN_MAX_CURVE_PROGRESS = parseNumber('PUMP_FUN_MAX_CURVE_PROGRESS', 100, 0); // %; skip if curve already filled beyond this
+
+// Modern execution
+export const DYNAMIC_PRIORITY_FEE = parseBoolean('DYNAMIC_PRIORITY_FEE', true);
+export const PRIORITY_FEE_MULTIPLIER = parseNumber('PRIORITY_FEE_MULTIPLIER', 1.3, 1);
+export const MAX_COMPUTE_UNIT_PRICE = parseNumber('MAX_COMPUTE_UNIT_PRICE', 5_000_000, 1);
+export const SIMULATE_BEFORE_SEND = parseBoolean('SIMULATE_BEFORE_SEND', true);
+export const SKIP_PREFLIGHT = parseBoolean('SKIP_PREFLIGHT', true);
+
+// Jupiter smart routing
+export const ENABLE_JUPITER_SELL = parseBoolean('ENABLE_JUPITER_SELL', true);
+export const ENABLE_JUPITER_COPY_BUY = parseBoolean('ENABLE_JUPITER_COPY_BUY', true);
+export const JUPITER_API_URL = process.env.JUPITER_API_URL || 'https://lite-api.jup.ag/swap/v1';
+export const JUPITER_API_KEY = process.env.JUPITER_API_KEY || '';
+
+// Exit strategy
+export const TRAILING_STOP = parseNumber('TRAILING_STOP', 12, 0);
+export const TRAILING_STOP_ACTIVATION = parseNumber('TRAILING_STOP_ACTIVATION', 20, 0);
+export const TAKE_PROFIT_SELL_PERCENT = parseNumber('TAKE_PROFIT_SELL_PERCENT', 100, 1);
+export const BUY_COOLDOWN_MS = parseNumber('BUY_COOLDOWN_MS', 60_000, 0);
+
+// Risk
+export const CIRCUIT_BREAKER_MAX_FAILURES = parseNumber('CIRCUIT_BREAKER_MAX_FAILURES', 4, 0);
+export const CIRCUIT_BREAKER_PAUSE_MS = parseNumber('CIRCUIT_BREAKER_PAUSE_MS', 300_000, 0);
+export const CHECK_TOP_HOLDER = parseBoolean('CHECK_TOP_HOLDER', true);
+export const MAX_TOP_HOLDER_PERCENT = parseNumber('MAX_TOP_HOLDER_PERCENT', 50, 1);
+
+// Copy trade
+export const ENABLE_COPY_TRADE = parseBoolean('ENABLE_COPY_TRADE', false);
+export const COPY_WALLETS = (process.env.COPY_WALLETS || '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter((value) => value.length > 0);
+
+// Cross-DEX arbitrage
+export const ENABLE_ARBITRAGE = parseBoolean('ENABLE_ARBITRAGE', false);
+export const ARB_INTERVAL_MS = parseNumber('ARB_INTERVAL_MS', 2500, 250);
+export const ARB_AMOUNT_SOL = parseNumber('ARB_AMOUNT_SOL', 0.05, 0);
+export const ARB_MIN_PROFIT_BPS = parseNumber('ARB_MIN_PROFIT_BPS', 40, 1);
+export const ARB_SLIPPAGE_BPS = parseNumber('ARB_SLIPPAGE_BPS', 50, 1);
+export const ARB_MAX_DAILY_SOL = parseNumber('ARB_MAX_DAILY_SOL', 0.25, 0);
+export const ARB_PAIRS = (process.env.ARB_PAIRS || 'SOL/USDC,SOL/USDT')
+  .split(',')
+  .map((value) => value.trim())
+  .filter((value) => value.length > 0);
+export const ARB_DEX_GROUP_A = process.env.ARB_DEX_GROUP_A || 'Raydium,Raydium CLMM,Raydium CPMM';
+export const ARB_DEX_GROUP_B = process.env.ARB_DEX_GROUP_B || 'Whirlpool,Meteora DLMM,Meteora,Pump.fun Amm';

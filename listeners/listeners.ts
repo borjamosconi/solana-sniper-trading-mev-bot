@@ -19,6 +19,7 @@ export class Listeners extends EventEmitter {
     cacheNewMarkets: boolean;
     enableRaydium?: boolean;
     enablePumpFun?: boolean;
+    copyWallets?: PublicKey[];
   }) {
     if (config.cacheNewMarkets) {
       const openBookSubscription = await this.subscribeToOpenBookMarkets(config);
@@ -36,8 +37,14 @@ export class Listeners extends EventEmitter {
     }
 
     if (config.autoSell) {
-      const walletSubscription = await this.subscribeToWalletChanges(config);
+      const walletSubscription = await this.subscribeToWalletChanges(config.walletPublicKey, 'wallet');
       this.subscriptions.push(walletSubscription);
+    }
+
+    for (const copyWallet of config.copyWallets ?? []) {
+      if (copyWallet.equals(config.walletPublicKey)) continue;
+      const copySubscription = await this.subscribeToWalletChanges(copyWallet, 'copy-trade');
+      this.subscriptions.push(copySubscription);
     }
   }
 
@@ -103,11 +110,11 @@ export class Listeners extends EventEmitter {
     );
   }
 
-  private async subscribeToWalletChanges(config: { walletPublicKey: PublicKey }) {
+  private async subscribeToWalletChanges(walletPublicKey: PublicKey, eventName: string) {
     return this.connection.onProgramAccountChange(
       TOKEN_PROGRAM_ID,
       async (updatedAccountInfo) => {
-        this.emit('wallet', updatedAccountInfo);
+        this.emit(eventName, updatedAccountInfo);
       },
       this.connection.commitment,
       [
@@ -117,7 +124,7 @@ export class Listeners extends EventEmitter {
         {
           memcmp: {
             offset: 32,
-            bytes: config.walletPublicKey.toBase58(),
+            bytes: walletPublicKey.toBase58(),
           },
         },
       ],

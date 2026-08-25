@@ -68,7 +68,8 @@ export class JitoTransactionExecutor implements TransactionExecutor {
       const jitoFeeTx = new VersionedTransaction(jitTipTxFeeMessage);
       jitoFeeTx.sign([payer]);
 
-      const jitoTxsignature = bs58.encode(jitoFeeTx.signatures[0]);
+      const jitoTipSignature = bs58.encode(jitoFeeTx.signatures[0]);
+      const swapSignature = bs58.encode(transaction.signatures[0]);
 
       // Serialize the transactions once here
       const serializedjitoFeeTx = bs58.encode(jitoFeeTx.serialize());
@@ -100,8 +101,8 @@ export class JitoTransactionExecutor implements TransactionExecutor {
 
       if (successfulResults.length > 0) {
         logger.trace(`At least one successful response`);
-        logger.debug(`Confirming jito transaction...`);
-        return await this.confirm(jitoTxsignature, latestBlockhash);
+        logger.debug(`Confirming jito swap transaction...`);
+        return await this.confirm(swapSignature || jitoTipSignature, latestBlockhash);
       } else {
         logger.debug(`No successful responses received for jito`);
       }
@@ -126,6 +127,6 @@ export class JitoTransactionExecutor implements TransactionExecutor {
       this.connection.commitment,
     );
 
-    return { confirmed: !confirmation.value.err, signature };
+    return { confirmed: !confirmation.value.err, signature, error: confirmation.value.err ? JSON.stringify(confirmation.value.err) : undefined };
   }
 }

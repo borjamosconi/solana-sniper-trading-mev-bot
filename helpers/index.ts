@@ -4,5 +4,10 @@ export * from './logger';
 export * from './constants';
 export * from './token';
 export * from './wallet';
-export * from './promises'
+export * from './promises';
 export * from './pumpfun';
+export * from './mints';
+export * from './priority-fee';
+export * from './jupiter';
+export * from './simulation';
+export * from './exit-strategy';

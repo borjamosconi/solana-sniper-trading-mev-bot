@@ -26,7 +26,7 @@ export class SnipeListCache {
     this.snipeList = data
       .split('\n')
       .map((a) => a.trim())
-      .filter((a) => a);
+      .filter((a) => a && !a.startsWith('#'));
 
     if (this.snipeList.length != count) {
       logger.info(`Loaded snipe list: ${this.snipeList.length}`);
