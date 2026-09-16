@@ -140,3 +140,9 @@ pnpm-lock.yaml
 
 # Bot runtime state (PnL kill switch, etc.)
 .bot-state/
+
+# Backtest candle dumps
+backtest/data/*.jsonl
+backtest/data/*.json
+backtest/*.sqlite
+backtest/reports/
