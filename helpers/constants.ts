@@ -76,7 +76,9 @@ export const PRE_LOAD_EXISTING_MARKETS = parseBoolean('PRE_LOAD_EXISTING_MARKETS
 export const CACHE_NEW_MARKETS = parseBoolean('CACHE_NEW_MARKETS');
 export const TRANSACTION_EXECUTOR = retrieveEnvVariable('TRANSACTION_EXECUTOR', logger);
 export const CUSTOM_FEE = retrieveEnvVariable('CUSTOM_FEE', logger);
-export const DRY_RUN = parseBoolean('DRY_RUN', false);
+// Live trading gate: broadcasts only when LIVE_TRADING=true. Otherwise force dry-run.
+export const LIVE_TRADING = parseBoolean('LIVE_TRADING', false);
+export const DRY_RUN = LIVE_TRADING ? parseBoolean('DRY_RUN', false) : true;
 export const MAX_OPEN_POSITIONS = parseNumber('MAX_OPEN_POSITIONS', 3, 1);
 export const MAX_DAILY_RAYDIUM_BUYS = parseNumber('MAX_DAILY_RAYDIUM_BUYS', 20, 1);
 export const MAX_DAILY_PUMPFUN_BUY_SOL = parseNumber('MAX_DAILY_PUMPFUN_BUY_SOL', 0.05, 0);
@@ -142,6 +144,10 @@ export const CIRCUIT_BREAKER_MAX_FAILURES = parseNumber('CIRCUIT_BREAKER_MAX_FAI
 export const CIRCUIT_BREAKER_PAUSE_MS = parseNumber('CIRCUIT_BREAKER_PAUSE_MS', 300_000, 0);
 export const CHECK_TOP_HOLDER = parseBoolean('CHECK_TOP_HOLDER', true);
 export const MAX_TOP_HOLDER_PERCENT = parseNumber('MAX_TOP_HOLDER_PERCENT', 50, 1);
+export const MAX_DAILY_LOSS_PERCENT = parseNumber('MAX_DAILY_LOSS_PERCENT', 10, 0);
+export const MAX_POSITION_PERCENT = parseNumber('MAX_POSITION_PERCENT', 2.5, 0);
+export const MIN_POOL_AGE_SECONDS = parseNumber('MIN_POOL_AGE_SECONDS', 30, 0);
+export const RESET_KILL_SWITCH = parseBoolean('RESET_KILL_SWITCH', false);
 
 // Copy trade
 export const ENABLE_COPY_TRADE = parseBoolean('ENABLE_COPY_TRADE', false);

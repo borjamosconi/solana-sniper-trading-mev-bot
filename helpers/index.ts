@@ -11,3 +11,4 @@ export * from './priority-fee';
 export * from './jupiter';
 export * from './simulation';
 export * from './exit-strategy';
+export * from './decision-log';
