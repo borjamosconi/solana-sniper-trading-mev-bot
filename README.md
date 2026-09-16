@@ -20,7 +20,7 @@ An automated **Solana sniping bot** that trades newly-listed tokens on **Raydium
 - Dynamic priority fees + pre-send **simulation**
 - Copy-trade from watched wallets
 - Circuit breaker, top-holder filter, sell-in-progress lock
-- Live-trading gate, daily loss kill switch, position % cap, min pool age, decision JSONL log
+- Live-trading gate, daily loss kill switch, position % cap, min pool age, decision JSONL log, optional Telegram alerts
 - Fixed OpenBook market vaults, Jito swap confirmation, and snipe-list comments
 
 Existing `.env` files keep working — new keys have defaults. Copy extras from `.env.copy` to tune them.
@@ -44,6 +44,7 @@ Existing `.env` files keep working — new keys have defaults. Copy extras from 
 - 🚦 **Risk caps** — max open positions, per-trade `%` of capital, daily buy limits, min pool age.
 - 🛑 **Daily loss kill switch** — persisted rolling 24h PnL stop that refuses new buys when tripped.
 - 🧾 **Decision log** — JSONL audit trail of enter/exit/skip decisions under `logs/decisions.jsonl`.
+- 📣 **Telegram alerts** — optional short ENTER/EXIT/SKIP and kill-switch messages to a configured chat.
 
 ---
 
@@ -155,6 +156,9 @@ All settings live in `.env`. Copy from `.env.copy` and edit.
 | `MAX_DAILY_PUMPFUN_BUY_SOL` | `0.05` | Total SOL budget for pump.fun buys per UTC day. |
 | `MAX_DAILY_LOSS_PERCENT` | `10` | Rolling 24h realized loss vs capital snapshot that trips the kill switch. |
 | `RESET_KILL_SWITCH` | `false` | Set `true` once + restart to clear a tripped kill switch, then set back to `false`. |
+| `TELEGRAM_ENABLED` | `false` | When `true`, send short decision + kill-switch alerts via Bot API. |
+| `TELEGRAM_BOT_TOKEN` | _(empty)_ | BotFather token. Leave empty when disabled. **Never commit real secrets.** |
+| `TELEGRAM_CHAT_ID` | _(empty)_ | Destination chat/user id for `sendMessage`. |
 
 ### Buy
 

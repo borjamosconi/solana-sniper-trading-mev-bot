@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { logger } from '../helpers/logger';
+import { sendTelegramAlert } from '../helpers/telegram';
 
 const STATE_DIR = path.join(process.cwd(), '.bot-state');
 const STATE_FILE = path.join(STATE_DIR, 'daily-loss.json');
@@ -126,6 +127,9 @@ export class DailyLossKillSwitch {
           startingCapitalRaw: this.state.startingCapitalRaw,
         },
         'Daily loss kill switch TRIPped — new buys disabled until manual reset + restart',
+      );
+      void sendTelegramAlert(
+        `🛑 KILL SWITCH tripped — ${this.state.tripReason}. New buys disabled until RESET_KILL_SWITCH=true + restart (or clear .bot-state/daily-loss.json).`,
       );
     }
   }

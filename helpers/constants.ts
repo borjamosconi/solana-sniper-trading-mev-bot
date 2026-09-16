@@ -149,6 +149,11 @@ export const MAX_POSITION_PERCENT = parseNumber('MAX_POSITION_PERCENT', 2.5, 0);
 export const MIN_POOL_AGE_SECONDS = parseNumber('MIN_POOL_AGE_SECONDS', 30, 0);
 export const RESET_KILL_SWITCH = parseBoolean('RESET_KILL_SWITCH', false);
 
+// Telegram alerts (optional; never required to start the bot)
+export const TELEGRAM_ENABLED = parseBoolean('TELEGRAM_ENABLED', false);
+export const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+export const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+
 // Copy trade
 export const ENABLE_COPY_TRADE = parseBoolean('ENABLE_COPY_TRADE', false);
 export const COPY_WALLETS = (process.env.COPY_WALLETS || '')
