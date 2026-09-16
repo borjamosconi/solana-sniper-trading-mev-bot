@@ -1,0 +1,17 @@
+{
+  "source": "https://kolscan.io/leaderboard",
+  "timeframe_days": 30,
+  "updated": "2026-09-17",
+  "wallets": [
+    {"rank":1,"name":"LJC","wallet":"6HJetMbdHBuk3mLUainxAPpBpWzDgYbHGTS2TqDAUSX2"},
+    {"rank":2,"name":"Cented","wallet":"CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o"},
+    {"rank":3,"name":"decu","wallet":"4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9"},
+    {"rank":4,"name":"trunoest","wallet":"ardinRsN1mNYVeoJWTBsWeYeXvuR9UUDGMsCDKpb6AT"},
+    {"rank":5,"name":"Pain","wallet":"J6TDXvarvpBdPXTaTU8eJbtso1PUCYKGkVtMKUUY8iEa"},
+    {"rank":6,"name":"Cupsey","wallet":"2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f"},
+    {"rank":7,"name":"Mr. Frog","wallet":"4DdrfiDHpmx55i4SPssxVzS9ZaKLb8qr45NKY9Er9nNh"},
+    {"rank":8,"name":"Kadenox","wallet":"B32QbbdDAyhvUQzjcaM5j6ZVKwjCxAwGH5Xgvb9SJqnC"},
+    {"rank":9,"name":"Dani","wallet":"AuPp4YTMTyqxYXQnHc5KUc6pUuCSsHQpBJhgnD45yqrf"},
+    {"rank":10,"name":"theo","wallet":"Bi4rd5FH5bYEN8scZ7wevxNZyNmKHdaBcvewdPFxYdLt"}
+  ]
+}
