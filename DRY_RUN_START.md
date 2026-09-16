@@ -78,6 +78,19 @@ QUOTE_AMOUNT=0.001
 
 Reinicia. Empieza con capital que puedas perder. Mantén kill switch y `MAX_POSITION_PERCENT=2.5`.
 
+
+## 9. Panel informativo (solo lectura)
+
+Mientras el bot corre (`npm start`), en otra terminal:
+
+```bash
+npm run dashboard
+```
+
+Abre **http://127.0.0.1:8787** (solo localhost). Puerto opcional: `DASHBOARD_PORT=8790 npm run dashboard`.
+
+El panel muestra modo DRY/LIVE, kill switch, feed de `logs/decisions.jsonl` y el top 10 Kolscan. **No permite operar** ni cambiar configuración (solo GET).
+
 ## Seguridad
 
 - No subas `.env` a GitHub (ya está en `.gitignore`).

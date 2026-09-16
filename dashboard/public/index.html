@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sniper Solana — Panel (solo lectura)</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #121821;
+      --panel-2: #182131;
+      --border: #243044;
+      --text: #e8eef7;
+      --muted: #8b9bb4;
+      --dry: #f5c542;
+      --live: #3dd68c;
+      --danger: #ff5c7a;
+      --ok: #3dd68c;
+      --skip: #8b9bb4;
+      --enter: #3dd68c;
+      --exit: #ff8f5c;
+      --accent: #5b8cff;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      background: radial-gradient(1200px 600px at 10% -10%, #1a2740 0%, var(--bg) 55%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 24px 8px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(11, 15, 20, 0.7);
+      backdrop-filter: blur(8px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.15rem;
+      font-weight: 650;
+      letter-spacing: 0.02em;
+    }
+    .sub {
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin-top: 4px;
+    }
+    .badges { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .badge.dry { color: var(--dry); border-color: #5a4a1a; background: #241e0c; }
+    .badge.live { color: var(--live); border-color: #1a4a34; background: #0d2419; }
+    .badge.unknown { color: var(--muted); }
+    .badge.trip { color: var(--danger); border-color: #5a2030; background: #2a1018; }
+    .badge.ok { color: var(--ok); border-color: #1a4a34; background: #0d2419; }
+    .badge.meta { color: var(--text); font-weight: 500; text-transform: none; letter-spacing: 0; }
+    .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: currentColor; box-shadow: 0 0 8px currentColor;
+    }
+    main {
+      padding: 20px 24px 40px;
+      display: grid;
+      grid-template-columns: 1.6fr 1fr;
+      gap: 16px;
+    }
+    @media (max-width: 960px) {
+      main { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      min-height: 200px;
+    }
+    .card h2 {
+      margin: 0;
+      padding: 14px 16px;
+      font-size: 0.95rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .card h2 span {
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-weight: 500;
+    }
+    .note {
+      grid-column: 1 / -1;
+      padding: 12px 16px;
+      border: 1px dashed #3a4a66;
+      border-radius: 12px;
+      color: var(--muted);
+      background: rgba(24, 33, 49, 0.5);
+      font-size: 0.9rem;
+    }
+    .note strong { color: var(--text); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.86rem;
+    }
+    th, td {
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      background: rgba(0,0,0,0.15);
+      position: sticky;
+      top: 0;
+    }
+    .scroll {
+      max-height: 520px;
+      overflow: auto;
+    }
+    .mono { font-family: var(--mono); font-size: 0.8rem; }
+    .side {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .side.enter { background: #143225; color: var(--enter); }
+    .side.exit { background: #3a2216; color: var(--exit); }
+    .side.skip { background: #222833; color: var(--skip); }
+    .mode-tag {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+    .mode-tag.dry { color: var(--dry); }
+    .mode-tag.live { color: var(--live); }
+    .empty {
+      padding: 28px 16px;
+      color: var(--muted);
+      text-align: center;
+      font-size: 0.9rem;
+    }
+    .reason { color: var(--text); word-break: break-word; }
+    .muted { color: var(--muted); }
+    footer {
+      padding: 0 24px 24px;
+      color: var(--muted);
+      font-size: 0.75rem;
+    }
+    .err {
+      color: var(--danger);
+      padding: 12px 16px;
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Panel informativo — Sniper Solana</h1>
+      <div class="sub">Actualización automática · sin controles de trading</div>
+    </div>
+    <div class="badges" id="badges">
+      <span class="badge unknown"><span class="dot"></span> Cargando…</span>
+    </div>
+  </header>
+
+  <main>
+    <div class="note">
+      <strong>Solo lectura</strong> — no se puede operar desde aquí. Este panel solo muestra
+      decisiones, kill switch y la watchlist Kolscan. No hay formularios ni acciones que cambien el bot.
+    </div>
+
+    <section class="card">
+      <h2>Feed de decisiones <span id="decisions-meta">—</span></h2>
+      <div class="scroll" id="decisions-wrap">
+        <div class="empty">Cargando decisiones…</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Kolscan Top 10 <span id="kolscan-meta">mensual</span></h2>
+      <div class="scroll" id="kolscan-wrap">
+        <div class="empty">Cargando watchlist…</div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    Última actualización UI: <span id="ui-updated">—</span>
+    · API localhost · puerto por defecto 8787 (<code>DASHBOARD_PORT</code>)
+  </footer>
+
+  <script>
+    const REFRESH_MS = 4000;
+
+    function esc(s) {
+      return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function fmtTime(ts) {
+      if (!ts) return '—';
+      try {
+        const d = new Date(ts);
+        return d.toLocaleString('es-ES', { hour12: false });
+      } catch {
+        return String(ts);
+      }
+    }
+
+    function modeLabel(status) {
+      if (status.dryRun === true || status.liveTrading === false) {
+        return { cls: 'dry', text: 'DRY RUN' };
+      }
+      if (status.liveTrading === true || status.dryRun === false) {
+        return { cls: 'live', text: 'LIVE' };
+      }
+      return { cls: 'unknown', text: 'MODO ?' };
+    }
+
+    function decisionMode(d) {
+      if (d.dryRun === true || d.live === false) return { cls: 'dry', text: 'DRY' };
+      if (d.live === true || d.dryRun === false) return { cls: 'live', text: 'LIVE' };
+      return { cls: '', text: '?' };
+    }
+
+    function renderBadges(status) {
+      const mode = modeLabel(status);
+      const ks = status.killSwitch || {};
+      const tripCls = ks.tripped ? 'trip' : 'ok';
+      const tripText = ks.tripped
+        ? 'KILL SWITCH ACTIVO'
+        : ks.present
+          ? 'Kill switch OK'
+          : 'Kill switch (sin estado)';
+      const loss =
+        ks.lossPercent != null
+          ? ` · pérdida ${Number(ks.lossPercent).toFixed(2)}%`
+          : '';
+      const tripReason = ks.tripped && ks.tripReason ? ` — ${ks.tripReason}` : '';
+
+      document.getElementById('badges').innerHTML = `
+        <span class="badge ${mode.cls}"><span class="dot"></span>${esc(mode.text)}</span>
+        <span class="badge ${tripCls}"><span class="dot"></span>${esc(tripText)}${esc(loss)}${esc(tripReason)}</span>
+        <span class="badge meta">Decisiones hoy: <strong>${esc(status.decisionsToday ?? 0)}</strong></span>
+        <span class="badge meta">Total log: <strong>${esc(status.decisionsCount ?? 0)}</strong></span>
+        <span class="badge meta">Wallets copy: <strong>${esc(status.copyWalletsCount ?? 0)}</strong></span>
+      `;
+    }
+
+    function renderDecisions(payload) {
+      const list = payload.decisions || [];
+      const wrap = document.getElementById('decisions-wrap');
+      document.getElementById('decisions-meta').textContent =
+        list.length ? `${list.length} recientes` : 'sin datos';
+
+      if (!list.length) {
+        wrap.innerHTML =
+          '<div class="empty">Aún no hay entradas en <code>logs/decisions.jsonl</code>. Arranca el bot con <code>npm start</code>.</div>';
+        return;
+      }
+
+      const rows = list
+        .map((d) => {
+          const side = String(d.side || 'skip').toLowerCase();
+          const mint = d.mintShort || (d.mint ? String(d.mint).slice(0, 4) + '…' : '—');
+          const m = decisionMode(d);
+          return `<tr>
+            <td><span class="side ${esc(side)}">${esc(side)}</span></td>
+            <td class="mono">${esc(mint)}</td>
+            <td class="reason">${esc(d.reason || '—')}</td>
+            <td class="mono muted">${esc(fmtTime(d.ts))}</td>
+            <td><span class="mode-tag ${m.cls}">${esc(m.text)}</span></td>
+          </tr>`;
+        })
+        .join('');
+
+      wrap.innerHTML = `<table>
+        <thead>
+          <tr>
+            <th>Lado</th>
+            <th>Mint</th>
+            <th>Motivo</th>
+            <th>Hora</th>
+            <th>Modo</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
+
+    function renderKolscan(payload) {
+      const wallets = payload.wallets || [];
+      const wrap = document.getElementById('kolscan-wrap');
+      const meta = [];
+      if (payload.updated) meta.push('act. ' + payload.updated);
+      if (payload.timeframe_days) meta.push(payload.timeframe_days + 'd');
+      document.getElementById('kolscan-meta').textContent = meta.join(' · ') || 'mensual';
+
+      if (!wallets.length) {
+        wrap.innerHTML =
+          '<div class="empty">No se pudo leer <code>kolscan-top10-monthly.json</code>.</div>';
+        return;
+      }
+
+      const rows = wallets
+        .map(
+          (w) => `<tr>
+            <td>${esc(w.rank)}</td>
+            <td>${esc(w.name)}</td>
+            <td class="mono">${esc(w.walletShort || w.wallet)}</td>
+          </tr>`,
+        )
+        .join('');
+
+      wrap.innerHTML = `<table>
+        <thead>
+          <tr><th>#</th><th>Nombre</th><th>Wallet</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
+
+    async function refresh() {
+      try {
+        const [statusRes, decRes, kolRes] = await Promise.all([
+          fetch('/api/status'),
+          fetch('/api/decisions?limit=100'),
+          fetch('/api/kolscan'),
+        ]);
+        if (!statusRes.ok) throw new Error('status ' + statusRes.status);
+        if (!decRes.ok) throw new Error('decisions ' + decRes.status);
+        if (!kolRes.ok) throw new Error('kolscan ' + kolRes.status);
+
+        const status = await statusRes.json();
+        const decisions = await decRes.json();
+        const kolscan = await kolRes.json();
+
+        renderBadges(status);
+        renderDecisions(decisions);
+        renderKolscan(kolscan);
+        document.getElementById('ui-updated').textContent = fmtTime(new Date().toISOString());
+      } catch (err) {
+        document.getElementById('badges').innerHTML =
+          `<span class="badge trip"><span class="dot"></span> Error API: ${esc(err.message)}</span>`;
+      }
+    }
+
+    refresh();
+    setInterval(refresh, REFRESH_MS);
+  </script>
+</body>
+</html>
