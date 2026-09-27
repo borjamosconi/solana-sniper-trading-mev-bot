@@ -96,3 +96,36 @@ El panel muestra modo DRY/LIVE, kill switch, feed de `logs/decisions.jsonl` y el
 - No subas `.env` a GitHub (ya está en `.gitignore`).
 - No pegues `PRIVATE_KEY` en chats.
 - Ver `SECURITY_NOTES.md`.
+
+## 9. Ver el rendimiento en papel (dashboard, solo lectura)
+
+```bash
+npm run dashboard
+```
+
+- Panel principal: <http://127.0.0.1:8787>
+- **Rendimiento en papel (DRY-RUN):** <http://127.0.0.1:8787/paper> (JSON: `/api/paper`)
+
+Qué hace (sin dinero real, sin botones de trading, solo GET):
+
+- Cada `DRY_RUN_ENTER` de `logs/decisions.jsonl` abre una posición en papel (hora de entrada = `ts`).
+  Un `ENTER` repetido del mismo mint con la posición abierta **no añade tamaño** (cuenta como HOLD).
+  También entiende el formato antiguo del bot (`side: enter|exit|skip`).
+- **Precio de entrada:** apertura de la vela de 15 min de GeckoTerminal que contiene `ts`
+  (reutiliza `backtest/fetch_ohlcv.ts`). Si GeckoTerminal no responde (429 frecuente), se usa el
+  primer precio observado en DexScreener y se marca **"entry approx"**; en cuanto llegan las velas,
+  se sustituye por el precio histórico.
+- **Precio actual:** DexScreener (`/latest/dex/tokens/<mint>`, par con más liquidez), caché ~60 s y
+  pausa automática si devuelve 429.
+- **Salidas en papel:** `TAKE_PROFIT` / `STOP_LOSS` (%) leídos de `process.env` → `.env` → `.env.copy`
+  (por defecto del repo: TP +40 %, SL −20 %; si no existen, TP +100 % / SL −30 %). Se revisan las velas
+  posteriores a la entrada (SL primero, conservador). No se aplica el timeout `PRICE_CHECK_DURATION`.
+- **Tamaño:** `max_position_percent` de cada decisión (2,5 %) sobre `PAPER_BANKROLL_SOL` (por defecto 1 SOL).
+  Ejemplo: `PAPER_BANKROLL_SOL=5 npm run dashboard`.
+- Muestra: posiciones abiertas y cerradas (PnL % y en SOL), totales (PnL, win rate, nº trades,
+  skips con motivos) y la línea temporal de decisiones.
+- Cachés locales en `.bot-state/` (gitignored): `paper-ohlcv/` y `paper-entry-approx.json`.
+  Bórralos si quieres recalcular desde cero.
+
+⚠️ Simulación: rentabilidades pasadas no garantizan resultados futuros. No incluye slippage,
+comisiones, MEV ni la liquidez real para salir (tokens con liquidez muy baja se marcan en "Notas").

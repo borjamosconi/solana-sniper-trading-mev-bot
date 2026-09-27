@@ -11,10 +11,11 @@
  */
 import fs from 'fs';
 import path from 'path';
+import axios from 'axios';
 
 const GT = 'https://api.geckoterminal.com/api/v2';
 
-type Candle = { t: number; o: number; h: number; l: number; c: number; v: number };
+export type Candle = { t: number; o: number; h: number; l: number; c: number; v: number };
 
 function arg(name: string, fallback?: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -22,17 +23,27 @@ function arg(name: string, fallback?: string): string | undefined {
   return fallback;
 }
 
-async function getJson(url: string): Promise<any> {
-  const res = await fetch(url, {
-    headers: { Accept: 'application/json', 'User-Agent': 'solana-sniper-backtest/1.0' },
-  });
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} for ${url}`);
+async function getJson(url: string, retries = 3): Promise<any> {
+  // axios instead of global fetch: the pinned @types/node has no fetch typings (ts-node fails).
+  for (let attempt = 0; ; attempt++) {
+    const res = await axios.get(url, {
+      headers: { Accept: 'application/json', 'User-Agent': 'solana-sniper-backtest/1.0' },
+      timeout: 15_000,
+      validateStatus: () => true,
+    });
+    // GeckoTerminal free tier is ~30 req/min: back off on 429 and retry a couple of times.
+    if (res.status === 429 && attempt < retries) {
+      await new Promise((r) => setTimeout(r, 2000 * 2 ** attempt));
+      continue;
+    }
+    if (res.status < 200 || res.status >= 300) {
+      throw new Error(`HTTP ${res.status} for ${url}`);
+    }
+    return res.data;
   }
-  return res.json();
 }
 
-async function resolvePool(mint: string): Promise<{ pool: string; name: string; symbol: string }> {
+export async function resolvePool(mint: string): Promise<{ pool: string; name: string; symbol: string }> {
   const body = await getJson(`${GT}/networks/solana/tokens/${mint}/pools?page=1`);
   const pools: any[] = body?.data || [];
   if (!pools.length) {
@@ -49,11 +60,19 @@ async function resolvePool(mint: string): Promise<{ pool: string; name: string; 
   return { pool, name, symbol };
 }
 
-async function fetchOhlcv(pool: string, aggregate: number, limit: number): Promise<Candle[]> {
+export async function fetchOhlcv(
+  pool: string,
+  aggregate: number,
+  limit: number,
+  opts: { token?: string; beforeTimestamp?: number } = {},
+): Promise<Candle[]> {
   // GeckoTerminal: /ohlcv/minute?aggregate=1|5|15...
-  const url =
+  // opts.token: token address to price (pool base by default); opts.beforeTimestamp: unix seconds.
+  let url =
     `${GT}/networks/solana/pools/${pool}/ohlcv/minute` +
     `?aggregate=${aggregate}&limit=${Math.min(limit, 1000)}&currency=usd`;
+  if (opts.token) url += `&token=${encodeURIComponent(opts.token)}`;
+  if (opts.beforeTimestamp) url += `&before_timestamp=${Math.floor(opts.beforeTimestamp)}`;
   const body = await getJson(url);
   const list: number[][] = body?.data?.attributes?.ohlcv_list || [];
   // API returns newest-first: [timestamp, open, high, low, close, volume]
@@ -115,7 +134,10 @@ async function main() {
   );
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Only run the CLI when executed directly (the dashboard imports the helpers above).
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

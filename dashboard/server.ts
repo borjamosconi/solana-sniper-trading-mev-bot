@@ -9,6 +9,7 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { URL } from 'url';
+import { getPaperSnapshot } from './paper';
 
 const HOST = process.env.DASHBOARD_HOST || '127.0.0.1';
 const PORT = Number(process.env.DASHBOARD_PORT || 8787);
@@ -434,6 +435,21 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    if (pathname === '/api/paper') {
+      // Paper (dry-run) performance — read-only, computed from decisions + public prices.
+      getPaperSnapshot()
+        .then((snap) => sendJson(res, 200, snap))
+        .catch((err) =>
+          sendJson(res, 500, { error: err instanceof Error ? err.message : 'paper error' }),
+        );
+      return;
+    }
+
+    if (pathname === '/paper') {
+      serveStatic('/paper.html', res);
+      return;
+    }
+
     if (pathname === '/api/health') {
       sendJson(res, 200, { ok: true, readOnly: true });
       return;
@@ -451,4 +467,7 @@ server.listen(PORT, HOST, () => {
   console.log(
     `Dashboard (solo lectura) en http://${HOST}:${PORT}  —  DASHBOARD_PORT=${PORT}`,
   );
+  console.log(`Rendimiento papel (DRY-RUN): http://${HOST}:${PORT}/paper`);
+  // Warm the paper snapshot in the background (public price APIs only).
+  getPaperSnapshot().catch(() => undefined);
 });

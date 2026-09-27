@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rendimiento en papel (DRY-RUN) — Sniper Solana</title>
+  <style>
+    :root {
+      --bg: #0b0f14; --panel: #121821; --panel-2: #182131; --border: #243044;
+      --text: #e8eef7; --muted: #8b9bb4; --dry: #f5c542; --up: #3dd68c; --down: #ff5c7a;
+      --accent: #5b8cff;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: var(--sans); color: var(--text);
+      background: radial-gradient(1200px 600px at 10% -10%, #1a2740 0%, var(--bg) 55%); min-height: 100vh; }
+    .banner { background: #241e0c; color: var(--dry); border-bottom: 2px solid #5a4a1a;
+      text-align: center; padding: 12px; font-weight: 800; letter-spacing: 0.06em; font-size: 1.05rem; }
+    header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
+      gap: 12px; padding: 16px 24px 8px; border-bottom: 1px solid var(--border); }
+    h1 { margin: 0; font-size: 1.15rem; }
+    .sub { color: var(--muted); font-size: 0.82rem; margin-top: 4px; }
+    nav a { color: var(--accent); text-decoration: none; margin-left: 14px; font-size: 0.9rem; }
+    main { padding: 18px 24px 40px; display: grid; gap: 16px; }
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+    .kpi { background: linear-gradient(180deg, var(--panel), var(--panel-2)); border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px 14px; }
+    .kpi .l { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .kpi .v { font-size: 1.35rem; font-weight: 700; margin-top: 4px; font-family: var(--mono); }
+    .kpi .s { color: var(--muted); font-size: 0.75rem; margin-top: 2px; }
+    .card { background: linear-gradient(180deg, var(--panel), var(--panel-2)); border: 1px solid var(--border);
+      border-radius: 14px; overflow: hidden; }
+    .card h2 { margin: 0; padding: 12px 16px; font-size: 0.95rem; border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; gap: 8px; }
+    .card h2 span { color: var(--muted); font-size: 0.75rem; font-weight: 500; }
+    .scroll { max-height: 520px; overflow: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em;
+      background: rgba(0,0,0,0.15); position: sticky; top: 0; }
+    td.num { font-family: var(--mono); text-align: right; white-space: nowrap; }
+    .mono { font-family: var(--mono); font-size: 0.78rem; }
+    .up { color: var(--up); } .down { color: var(--down); } .muted { color: var(--muted); }
+    .tag { display: inline-block; padding: 1px 6px; border-radius: 5px; font-size: 0.68rem; font-weight: 700;
+      border: 1px solid var(--border); margin-left: 4px; }
+    .tag.approx { color: var(--dry); border-color: #5a4a1a; }
+    .act { display: inline-block; padding: 2px 7px; border-radius: 6px; font-size: 0.7rem; font-weight: 700; }
+    .act.DRY_RUN_ENTER { background: #143225; color: var(--up); }
+    .act.SKIP { background: #222833; color: var(--muted); }
+    .act.HOLD { background: #1c2742; color: var(--accent); }
+    .act.EXIT { background: #3a2216; color: #ff8f5c; }
+    .note { padding: 12px 16px; border: 1px dashed #3a4a66; border-radius: 12px; color: var(--muted);
+      background: rgba(24, 33, 49, 0.5); font-size: 0.85rem; }
+    .note strong { color: var(--text); }
+    .gaps { color: var(--dry); }
+    .empty { padding: 24px 16px; color: var(--muted); text-align: center; }
+    footer { padding: 0 24px 24px; color: var(--muted); font-size: 0.75rem; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 960px) { .grid2 { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="banner">⚠️ DRY-RUN / papel — sin dinero real</div>
+  <header>
+    <div>
+      <h1>Rendimiento en papel — Sniper Solana</h1>
+      <div class="sub" id="cfg">Cargando…</div>
+    </div>
+    <nav><a href="/">← Panel principal</a><a href="/api/paper" target="_blank">JSON</a></nav>
+  </header>
+
+  <main>
+    <div class="note" id="disclaimer">
+      <strong>Aviso:</strong> rendimiento simulado. Rentabilidades pasadas no garantizan resultados futuros.
+    </div>
+
+    <div class="kpis" id="kpis"></div>
+
+    <section class="card">
+      <h2>Posiciones abiertas (papel) <span id="open-meta">—</span></h2>
+      <div class="scroll" id="open-wrap"><div class="empty">Calculando (consulta precios públicos, puede tardar ~1 min la primera vez)…</div></div>
+    </section>
+
+    <section class="card">
+      <h2>Posiciones cerradas (TP/SL en papel) <span id="closed-meta">—</span></h2>
+      <div class="scroll" id="closed-wrap"><div class="empty">—</div></div>
+    </section>
+
+    <div class="grid2">
+      <section class="card">
+        <h2>Skips y motivos <span id="skip-meta">—</span></h2>
+        <div class="scroll" id="skip-wrap"><div class="empty">—</div></div>
+      </section>
+      <section class="card">
+        <h2>Huecos de datos <span>precios no disponibles, aproximaciones</span></h2>
+        <div class="scroll" id="gaps-wrap"><div class="empty">—</div></div>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>Línea temporal de decisiones <span id="tl-meta">—</span></h2>
+      <div class="scroll" id="tl-wrap"><div class="empty">—</div></div>
+    </section>
+  </main>
+
+  <footer>
+    Solo lectura · sin controles de trading · Precios: GeckoTerminal (OHLCV entrada) y DexScreener (actual, caché ~60 s).
+    Última actualización: <span id="updated">—</span>
+  </footer>
+
+  <script>
+    const REFRESH_MS = 30000;
+    const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const fmtTime = (ts) => { if (!ts) return '—'; const d = new Date(ts); return isNaN(d) ? String(ts) : d.toLocaleString('es-ES', { hour12: false, timeZone: 'Europe/Madrid' }); };
+    function fmtPrice(p) {
+      if (p == null) return '—';
+      if (p >= 1) return '$' + p.toFixed(4);
+      const digits = Math.max(2, 3 - Math.floor(Math.log10(p)));
+      return '$' + p.toFixed(Math.min(digits, 12));
+    }
+    const cls = (v) => (v == null ? 'muted' : v > 0 ? 'up' : v < 0 ? 'down' : '');
+    const pct = (v) => (v == null ? '—' : (v > 0 ? '+' : '') + v.toFixed(2) + '%');
+    const sol = (v) => (v == null ? '—' : (v > 0 ? '+' : '') + v.toFixed(5) + ' SOL');
+    const reasonEs = { take_profit: 'Take profit', stop_loss: 'Stop loss' };
+
+    function posRows(list, closed) {
+      return list.map((p) => `<tr>
+        <td><strong>${esc(p.symbol)}</strong></td>
+        <td class="mono" title="${esc(p.mint)}">${esc(p.mintShort)}</td>
+        <td class="mono muted">${esc(fmtTime(p.entryTs))}</td>
+        <td class="num" title="${esc(p.entrySource)}">${esc(fmtPrice(p.entryPrice))}${p.entryApprox ? '<span class="tag approx">entry approx</span>' : ''}</td>
+        ${closed
+          ? `<td class="num">${esc(fmtPrice(p.exitPrice))}</td><td>${esc(reasonEs[p.exitReason] || p.exitReason || '—')}</td><td class="mono muted">${esc(fmtTime(p.exitTs))}</td>`
+          : `<td class="num">${esc(fmtPrice(p.currentPrice))}</td>`}
+        <td class="num ${cls(p.pnlPct)}">${esc(pct(p.pnlPct))}</td>
+        <td class="num ${cls(p.pnlSol)}">${esc(sol(p.pnlSol))}</td>
+        <td class="num muted">${esc(p.sizeSol.toFixed(4))}</td>
+        <td class="muted">${esc([p.duplicateEnters ? p.duplicateEnters + ' ENTER dup.' : '', p.holds ? p.holds + ' HOLD' : '', ...(p.notes || [])].filter(Boolean).join(' · ') || '—')}</td>
+      </tr>`).join('');
+    }
+
+    function table(list, closed) {
+      if (!list.length) return `<div class="empty">${closed ? 'Ninguna posición cerrada todavía por TP/SL.' : 'No hay posiciones abiertas.'}</div>`;
+      return `<table><thead><tr>
+        <th>Símbolo</th><th>Mint</th><th>Entrada (hora)</th><th>Precio entrada</th>
+        ${closed ? '<th>Precio salida</th><th>Motivo</th><th>Salida (hora)</th>' : '<th>Precio actual</th>'}
+        <th>PnL %</th><th>PnL (SOL)</th><th>Tamaño SOL</th><th>Notas</th>
+      </tr></thead><tbody>${posRows(list, closed)}</tbody></table>`;
+    }
+
+    function render(s) {
+      const c = s.config, t = s.totals;
+      document.getElementById('cfg').textContent =
+        `Bankroll papel ${c.bankrollSol} SOL · ${c.positionPercent}% por posición (${(c.bankrollSol * c.positionPercent / 100).toFixed(4)} SOL) · ` +
+        `TP +${c.takeProfitPct}% / SL −${c.stopLossPct}% (${c.exitRulesSource}) · velas ${c.candleMinutes} min`;
+      document.getElementById('disclaimer').innerHTML = `<strong>Aviso:</strong> ${esc(s.disclaimer)}`;
+      const kpi = (l, v, sub, k) => `<div class="kpi"><div class="l">${esc(l)}</div><div class="v ${k || ''}">${esc(v)}</div><div class="s">${esc(sub || '')}</div></div>`;
+      document.getElementById('kpis').innerHTML = [
+        kpi('PnL total', sol(t.totalSol), pct(t.totalPctBankroll) + ' del bankroll', cls(t.totalSol)),
+        kpi('Realizado', sol(t.realizedSol), `${t.closedCount} cerradas`, cls(t.realizedSol)),
+        kpi('No realizado', sol(t.unrealizedSol), `${t.openCount} abiertas · ${t.deployedSol.toFixed(4)} SOL en uso`, cls(t.unrealizedSol)),
+        kpi('Win rate (cerradas)', t.winRateClosed == null ? '—' : t.winRateClosed.toFixed(0) + '%', `${t.wins} G / ${t.losses} P`),
+        kpi('Win rate (todas, a mercado)', t.winRateAllMarked == null ? '—' : t.winRateAllMarked.toFixed(0) + '%', 'abiertas valoradas a precio actual'),
+        kpi('Trades papel', String(t.trades), `PnL medio ${pct(t.avgPnlPct)}`),
+        kpi('Skips', String(t.skips), `${t.holds} HOLD · ${t.duplicateEnters} ENTER duplicados`),
+      ].join('');
+
+      document.getElementById('open-meta').textContent = `${s.open.length} abiertas`;
+      document.getElementById('open-wrap').innerHTML = table(s.open, false);
+      document.getElementById('closed-meta').textContent = `${s.closed.length} cerradas`;
+      document.getElementById('closed-wrap').innerHTML = table(s.closed, true);
+
+      document.getElementById('skip-meta').textContent = `${t.skips} skips`;
+      document.getElementById('skip-wrap').innerHTML = t.skipReasons.length
+        ? `<table><thead><tr><th>Hora</th><th>Símbolo</th><th>Motivo</th></tr></thead><tbody>${t.skipReasons.map((r) =>
+            `<tr><td class="mono muted">${esc(fmtTime(r.ts))}</td><td><strong>${esc(r.symbol)}</strong> <span class="mono muted">${esc(r.mintShort)}</span></td><td>${esc(r.reason || '—')}</td></tr>`).join('')}</tbody></table>`
+        : '<div class="empty">Sin skips.</div>';
+
+      document.getElementById('gaps-wrap').innerHTML = s.gaps.length
+        ? `<table><tbody>${s.gaps.map((g) => `<tr><td class="gaps">${esc(g)}</td></tr>`).join('')}</tbody></table>`
+        : '<div class="empty">Sin huecos: todos los precios disponibles.</div>';
+
+      document.getElementById('tl-meta').textContent = `${s.timeline.length} decisiones (más reciente primero)`;
+      document.getElementById('tl-wrap').innerHTML = s.timeline.length
+        ? `<table><thead><tr><th>Hora</th><th>Acción</th><th>Símbolo</th><th>Motivo</th><th>Efecto en papel</th><th>Fuente</th></tr></thead><tbody>${s.timeline.map((d) =>
+            `<tr><td class="mono muted">${esc(fmtTime(d.ts))}</td><td><span class="act ${esc(d.action)}">${esc(d.action)}</span></td>
+             <td><strong>${esc(d.symbol)}</strong> <span class="mono muted">${esc(d.mintShort)}</span></td><td>${esc(d.reason || '—')}</td>
+             <td class="muted">${esc(d.effect)}</td><td class="mono muted">${esc(d.source)}</td></tr>`).join('')}</tbody></table>`
+        : '<div class="empty">No hay decisiones en <code>logs/decisions.jsonl</code>.</div>';
+
+      document.getElementById('updated').textContent = `${fmtTime(s.computedAt)} (hora Madrid)`;
+    }
+
+    async function refresh() {
+      try {
+        const r = await fetch('/api/paper');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        render(await r.json());
+      } catch (e) {
+        document.getElementById('open-wrap').innerHTML = `<div class="empty down">Error API: ${esc(e.message)}</div>`;
+      }
+    }
+    refresh();
+    setInterval(refresh, REFRESH_MS);
+  </script>
+</body>
+</html>
