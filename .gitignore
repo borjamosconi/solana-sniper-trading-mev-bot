@@ -146,3 +146,6 @@ backtest/data/*.jsonl
 backtest/data/*.json
 backtest/*.sqlite
 backtest/reports/
+
+# Static paper-dashboard snapshots (may contain your trading data)
+dashboard/snapshots/

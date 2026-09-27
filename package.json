@@ -7,7 +7,8 @@
     "start": "ts-node index.ts",
     "tsc": "tsc --noEmit",
     "dashboard": "ts-node dashboard/server.ts",
-    "backtest:fetch": "ts-node backtest/fetch_ohlcv.ts"
+    "backtest:fetch": "ts-node backtest/fetch_ohlcv.ts",
+    "dashboard:snapshot": "ts-node dashboard/snapshot.ts"
   },
   "dependencies": {
     "@metaplex-foundation/mpl-token-metadata": "^3.2.1",

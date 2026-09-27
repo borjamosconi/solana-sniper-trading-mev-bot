@@ -4,8 +4,9 @@
  * - Reads logs/decisions.jsonl (promesa_handoff format + legacy bot format).
  * - Every DRY_RUN_ENTER opens a paper position; a duplicate ENTER for a mint that is
  *   still open adds NO size (treated as HOLD).
- * - Entry price: GeckoTerminal OHLCV near the decision ts (reuses backtest/fetch_ohlcv.ts);
- *   fallback = first observed DexScreener price, flagged "entry approx".
+ * - Entry price: OHLCV near the decision ts from ./price-sources (GeckoTerminal → CoinGecko
+ *   on-chain / Birdeye if keyed → local imports); last resort = first observed DexScreener
+ *   price, flagged "entry approx".
  * - Current price: DexScreener (batched, cached ~60s, backs off on 429).
  * - Exit rules: TAKE_PROFIT / STOP_LOSS (%) like the bot, scanned over candles after entry.
  *
@@ -15,21 +16,17 @@
 import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
-import { Candle, fetchOhlcv, resolvePool } from '../backtest/fetch_ohlcv';
+import { Candle, CANDLE_MIN, cleanTimeline, getCandles, priceNear, priceSourcesStatus } from './price-sources';
 
 const ROOT = process.cwd();
 const DECISIONS_FILE = path.join(ROOT, 'logs', 'decisions.jsonl');
 const ENV_FILE = path.join(ROOT, '.env');
 const ENV_DEFAULTS_FILE = path.join(ROOT, '.env.copy');
 const APPROX_CACHE_FILE = path.join(ROOT, '.bot-state', 'paper-entry-approx.json');
-const OHLCV_CACHE_DIR = path.join(ROOT, '.bot-state', 'paper-ohlcv');
+const KILL_SWITCH_FILE = path.join(ROOT, '.bot-state', 'daily-loss.json');
 
-const CANDLE_MIN = 15;
-const CANDLE_SEC = CANDLE_MIN * 60;
 const DEX_TTL_MS = 60_000;
-const OHLCV_TTL_MS = 5 * 60_000;
 const SNAPSHOT_TTL_MS = 60_000;
-const GT_SPACING_MS = 6_000; // GeckoTerminal free tier (~30 req/min nominal, stricter in practice)
 
 const WHITELIST = ['TAKE_PROFIT', 'STOP_LOSS', 'MAX_POSITION_PERCENT', 'PAPER_BANKROLL_SOL'] as const;
 type WhitelistKey = (typeof WHITELIST)[number];
@@ -178,13 +175,45 @@ interface DexPair {
   symbol: string;
   priceUsd: number;
   liquidityUsd: number;
+  change1h: number | null;
+  change24h: number | null;
+  volume24h: number | null;
 }
 const dexCache = new Map<string, { at: number; pair: DexPair | null }>();
 let dexBackoffUntil = 0;
 let dexBackoffMs = 30_000;
 let lastDexError: string | null = null;
 
+const DEX_CACHE_FILE = path.join(ROOT, '.bot-state', 'paper-dex-cache.json');
+let dexDiskLoaded = false;
+
 async function refreshDexPrices(mints: string[]): Promise<void> {
+  if (!dexDiskLoaded) {
+    // Last known prices survive restarts (used only until a fresh DexScreener answer arrives).
+    dexDiskLoaded = true;
+    try {
+      const d = JSON.parse(fs.readFileSync(DEX_CACHE_FILE, 'utf8')) as Record<
+        string,
+        { at: number; pair: DexPair | null }
+      >;
+      for (const [m, v] of Object.entries(d)) if (!dexCache.has(m)) dexCache.set(m, v);
+    } catch {
+      /* no disk cache */
+    }
+  }
+  try {
+    await refreshDexPricesInner(mints);
+  } finally {
+    try {
+      fs.mkdirSync(path.dirname(DEX_CACHE_FILE), { recursive: true });
+      fs.writeFileSync(DEX_CACHE_FILE, JSON.stringify(Object.fromEntries(dexCache)));
+    } catch {
+      /* non-fatal */
+    }
+  }
+}
+
+async function refreshDexPricesInner(mints: string[]): Promise<void> {
   const now = Date.now();
   const stale = mints.filter((m) => {
     const c = dexCache.get(m);
@@ -224,6 +253,9 @@ async function refreshDexPrices(mints: string[]): Promise<void> {
             symbol: p.baseToken?.symbol || '',
             priceUsd: price,
             liquidityUsd: Number.isFinite(liq) ? liq : 0,
+            change1h: Number.isFinite(Number(p?.priceChange?.h1)) ? Number(p.priceChange.h1) : null,
+            change24h: Number.isFinite(Number(p?.priceChange?.h24)) ? Number(p.priceChange.h24) : null,
+            volume24h: Number.isFinite(Number(p?.volume?.h24)) ? Number(p.volume.h24) : null,
           };
         }
       }
@@ -235,125 +267,66 @@ async function refreshDexPrices(mints: string[]): Promise<void> {
   }
 }
 
-const ohlcvCache = new Map<string, { at: number; pool: string | null; candles: Candle[]; error: string | null }>();
-let lastGtCall = 0;
-let gtBackoffUntil = 0;
-let gtBackoffMs = 60_000;
+// ---------------------------------------------------------------- live/paper status
 
-async function gtThrottle(): Promise<void> {
-  const wait = lastGtCall + GT_SPACING_MS - Date.now();
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-  lastGtCall = Date.now();
-}
-
-function candleFile(mint: string): string {
-  return path.join(OHLCV_CACHE_DIR, `${mint.replace(/[^A-Za-z0-9]/g, '')}-${CANDLE_MIN}m.json`);
-}
-
-async function getCandles(
-  mint: string,
-  earliestSec: number,
-): Promise<{ candles: Candle[]; pool: string | null; error: string | null }> {
-  let cached = ohlcvCache.get(mint);
-  if (!cached) {
-    // Disk cache survives restarts so we only need to fetch new candles (GeckoTerminal is strict on 429).
+/** LIVE_TRADING / DRY_RUN as booleans only (process.env → .env → .env.copy). Nothing else is read. */
+function readBoolFlag(name: 'LIVE_TRADING' | 'DRY_RUN'): { value: boolean | null; source: string } {
+  const pe = process.env[name];
+  if (pe === 'true' || pe === 'false') return { value: pe === 'true', source: 'process.env' };
+  for (const [file, label] of [
+    [ENV_FILE, '.env'],
+    [ENV_DEFAULTS_FILE, '.env.copy'],
+  ] as const) {
     try {
-      const disk = JSON.parse(fs.readFileSync(candleFile(mint), 'utf8'));
-      if (Array.isArray(disk.candles)) {
-        cached = { at: 0, pool: disk.pool || null, candles: disk.candles, error: null };
-        ohlcvCache.set(mint, cached);
+      if (!fs.existsSync(file)) continue;
+      for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+        const t = line.trim();
+        if (!t.startsWith(`${name}=`)) continue;
+        const v = t
+          .slice(name.length + 1)
+          .trim()
+          .replace(/^['"]|['"]$/g, '')
+          .toLowerCase();
+        if (v === 'true' || v === 'false') return { value: v === 'true', source: label };
       }
     } catch {
-      /* no disk cache */
+      /* ignore */
     }
   }
-  // Failed fetches are retried sooner (60s) than successful ones (5 min).
-  if (cached && Date.now() - cached.at < (cached.error ? DEX_TTL_MS : OHLCV_TTL_MS)) return cached;
-  if (Date.now() < gtBackoffUntil) {
-    const secs = Math.ceil((gtBackoffUntil - Date.now()) / 1000);
-    return {
-      candles: cached?.candles || [],
-      pool: cached?.pool || null,
-      error: `GeckoTerminal en pausa por 429 (reintento en ~${secs}s)`,
-    };
-  }
-  let pool = cached?.pool || dexCache.get(mint)?.pair?.pairAddress || null;
-  let candles: Candle[] = cached?.candles ? [...cached.candles] : [];
-  let error: string | null = null;
+  return { value: null, source: 'desconocido' };
+}
+
+function readLiveStatus() {
+  const live = readBoolFlag('LIVE_TRADING');
+  const dry = readBoolFlag('DRY_RUN');
+  let killSwitch: Record<string, unknown> = { present: false, tripped: false };
   try {
-    if (!pool) {
-      await gtThrottle();
-      pool = (await resolvePool(mint)).pool;
-    }
-    const covered = candles.length > 0 && candles[0].t <= earliestSec;
-    if (covered) {
-      // Incremental: only the candles since the last one we have.
-      const lastT = candles[candles.length - 1].t;
-      const need = Math.min(1000, Math.max(10, Math.ceil((Date.now() / 1000 - lastT) / CANDLE_SEC) + 2));
-      await gtThrottle();
-      candles = [...candles, ...(await fetchOhlcv(pool, CANDLE_MIN, need, { token: mint }))];
-    } else {
-      let before: number | undefined;
-      const acc: Candle[] = [];
-      for (let batch = 0; batch < 3; batch++) {
-        await gtThrottle();
-        const got = await fetchOhlcv(pool, CANDLE_MIN, 1000, { token: mint, beforeTimestamp: before });
-        if (!got.length) break;
-        acc.unshift(...got);
-        if (got[0].t <= earliestSec - CANDLE_SEC || got.length < 1000) break;
-        before = got[0].t;
+    if (fs.existsSync(KILL_SWITCH_FILE)) {
+      const k = JSON.parse(fs.readFileSync(KILL_SWITCH_FILE, 'utf8'));
+      let lossPercent: number | null = null;
+      try {
+        const start = BigInt(k.startingCapitalRaw || '0');
+        const pnl = BigInt(k.realizedPnlRaw || '0');
+        if (start > 0n) lossPercent = pnl < 0n ? Number((-pnl * 10000n) / start) / 100 : 0;
+      } catch {
+        lossPercent = null;
       }
-      candles = [...acc, ...candles];
+      killSwitch = {
+        present: true,
+        tripped: !!k.tripped,
+        tripReason: typeof k.tripReason === 'string' ? k.tripReason : null,
+        trippedAt: typeof k.trippedAt === 'number' ? new Date(k.trippedAt).toISOString() : null,
+        windowStartedAt: typeof k.windowStartedAt === 'number' ? new Date(k.windowStartedAt).toISOString() : null,
+        maxDailyLossPercent: typeof k.maxDailyLossPercent === 'number' ? k.maxDailyLossPercent : null,
+        lossPercent,
+      };
     }
-    const byT = new Map<number, Candle>();
-    for (const c of candles) byT.set(c.t, c); // later fetch wins (last candle may have been partial)
-    candles = [...byT.values()].sort((a, b) => a.t - b.t);
-    try {
-      fs.mkdirSync(OHLCV_CACHE_DIR, { recursive: true });
-      fs.writeFileSync(candleFile(mint), JSON.stringify({ mint, pool, fetchedAt: new Date().toISOString(), candles }));
-    } catch {
-      /* non-fatal */
-    }
-    gtBackoffMs = 60_000;
-  } catch (e) {
-    error = e instanceof Error ? e.message : String(e);
-    if (/HTTP 429/.test(error)) {
-      // Stop hammering GeckoTerminal: pause all OHLCV calls, doubling up to 10 min.
-      gtBackoffUntil = Date.now() + gtBackoffMs;
-      gtBackoffMs = Math.min(gtBackoffMs * 2, 10 * 60_000);
-      error = 'GeckoTerminal 429 (rate limit) — reintento automático más tarde';
-    }
-  }
-  const entry = { at: Date.now(), pool, candles, error };
-  ohlcvCache.set(mint, entry);
-  return entry;
-}
-
-function loadApproxCache(): Record<string, { price: number; observedAt: string }> {
-  try {
-    return JSON.parse(fs.readFileSync(APPROX_CACHE_FILE, 'utf8'));
   } catch {
-    return {};
+    killSwitch = { present: false, tripped: false, error: 'estado ilegible' };
   }
-}
-function saveApproxCache(c: Record<string, { price: number; observedAt: string }>): void {
-  try {
-    fs.mkdirSync(path.dirname(APPROX_CACHE_FILE), { recursive: true });
-    fs.writeFileSync(APPROX_CACHE_FILE, JSON.stringify(c, null, 2));
-  } catch {
-    /* non-fatal */
-  }
-}
-
-/** Price near ts (unix sec) from candles: open of the candle containing ts, else nearest close within 2h. */
-function priceNear(candles: Candle[], sec: number): { price: number; candleT: number; exact: boolean } | null {
-  const containing = candles.find((c) => c.t <= sec && sec < c.t + CANDLE_SEC);
-  if (containing) return { price: containing.o, candleT: containing.t, exact: true };
-  let best: Candle | null = null;
-  for (const c of candles) {
-    if (Math.abs(c.t - sec) <= 2 * 3600 && (!best || Math.abs(c.t - sec) < Math.abs(best.t - sec))) best = c;
-  }
-  return best ? { price: best.c, candleT: best.t, exact: false } : null;
+  // Bot semantics: anything other than LIVE_TRADING=true means dry-run.
+  const effectiveMode = live.value === true && dry.value !== true ? 'LIVE' : 'DRY-RUN';
+  return { liveTrading: live.value, liveTradingSource: live.source, dryRun: dry.value, effectiveMode, killSwitch };
 }
 
 // ---------------------------------------------------------------- simulation
@@ -368,6 +341,7 @@ interface Position {
   entryPrice: number | null;
   entryApprox: boolean;
   entrySource: string;
+  priceSources: string[];
   sizeSol: number;
   positionPercent: number;
   tpPrice: number | null;
@@ -382,7 +356,16 @@ interface Position {
   exitReason: string | null;
   pnlPct: number | null;
   pnlSol: number | null;
+  maxUpPct: number | null;
+  maxDownPct: number | null;
   notes: string[];
+  chart: [number, number][]; // [unix sec, close] downsampled, for line charts
+  candles: [number, number, number, number, number][]; // [t,o,h,l,c] last candles since entry (bar sparkline)
+  change1h: number | null;
+  change24h: number | null;
+  volume24h: number | null;
+  slTpPosition: number | null; // 0 = at SL, 1 = at TP (current/exit price)
+  priceAt: string | null; // when the DexScreener price was fetched
 }
 
 export interface PaperSnapshot {
@@ -391,16 +374,45 @@ export interface PaperSnapshot {
   banner: string;
   disclaimer: string;
   config: PaperConfig;
+  status: ReturnType<typeof readLiveStatus>;
+  pipeline: Record<string, Record<string, unknown>>;
+  priceSources: Record<string, boolean | string>;
   open: Position[];
   closed: Position[];
   totals: Record<string, unknown>;
+  equity: { t: number; pnlSol: number }[];
   timeline: Record<string, unknown>[];
+  sources: string[];
   gaps: string[];
   computedAt: string;
   computeMs: number;
 }
 
-async function compute(): Promise<PaperSnapshot> {
+function downsample(points: [number, number][], max: number): [number, number][] {
+  if (points.length <= max) return points;
+  const step = points.length / max;
+  const out: [number, number][] = [];
+  for (let i = 0; i < max; i++) out.push(points[Math.floor(i * step)]);
+  out[out.length - 1] = points[points.length - 1];
+  return out;
+}
+
+/** Last close at or before `sec` from a sorted clean timeline. */
+function closeAt(tl: Candle[], sec: number): number | null {
+  let lo = 0;
+  let hi = tl.length - 1;
+  let ans: number | null = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (tl[mid].t + tl[mid].i <= sec) {
+      ans = tl[mid].c;
+      lo = mid + 1;
+    } else hi = mid - 1;
+  }
+  return ans;
+}
+
+export async function computePaperSnapshot(): Promise<PaperSnapshot> {
   const started = Date.now();
   const cfg = readConfig();
   const decisions = readAllDecisions();
@@ -418,42 +430,35 @@ async function compute(): Promise<PaperSnapshot> {
     const s = Math.floor(d.tsMs / 1000);
     if (!earliest.has(d.mint) || s < (earliest.get(d.mint) as number)) earliest.set(d.mint, s);
   }
-  const candleMap = new Map<string, Candle[]>();
+  const candleMap = new Map<string, Candle[]>(); // all candles (mixed intervals)
+  const timelineMap = new Map<string, Candle[]>(); // clean, non-overlapping
+  const sourceMap = new Map<string, string[]>();
+  const allSources = new Set<string>();
+  const staleMints: string[] = [];
   for (const mint of earliest.keys()) {
-    const r = await getCandles(mint, earliest.get(mint) as number);
+    const r = await getCandles(mint, earliest.get(mint) as number, dexCache.get(mint)?.pair?.pairAddress || null);
     candleMap.set(mint, r.candles);
-    if (r.error) gaps.push(`OHLCV ${shortAddress(mint)}: ${r.error}`);
+    timelineMap.set(mint, cleanTimeline(r.candles));
+    sourceMap.set(mint, r.sources);
+    r.sources.forEach((s) => allSources.add(s));
+    const covered = r.candles.length > 0 && r.candles[0].t <= (earliest.get(mint) as number);
+    if (r.errors.length && covered) staleMints.push(mint);
+    else for (const e of r.errors) gaps.push(`OHLCV ${shortAddress(mint)}: ${e}`);
   }
 
+  if (staleMints.length) {
+    gaps.push(
+      `OHLCV remoto no disponible ahora (429/sin clave) para ${staleMints.length} token(s): se usan velas en caché/importadas; los precios actuales siguen viniendo de DexScreener`,
+    );
+  }
   const approx = loadApproxCache();
   let approxDirty = false;
   const nowSec = Math.floor(Date.now() / 1000);
   const positions: Position[] = [];
   const openByMint = new Map<string, Position>();
+  const entryCandleEnd = new Map<number, number>();
   const timeline: Record<string, unknown>[] = [];
 
-  /** Scan candles after entry (and the live price) for TP/SL. Closes pos if hit before `untilSec`. */
-  const evaluateExits = (pos: Position, untilSec: number, useLive: boolean) => {
-    if (pos.status !== 'open' || pos.entryPrice == null || pos.tpPrice == null || pos.slPrice == null) return;
-    const entrySec = Math.floor(Date.parse(pos.entryTs) / 1000);
-    const firstT = Math.floor(entrySec / CANDLE_SEC) * CANDLE_SEC + CANDLE_SEC;
-    for (const c of candleMap.get(pos.mint) || []) {
-      if (c.t < firstT || c.t >= untilSec) continue;
-      // Stop-loss checked first (conservative, same order as helpers/exit-strategy.ts).
-      if (c.l <= pos.slPrice) {
-        close(pos, c.t, Math.min(c.o, pos.slPrice), 'stop_loss');
-        return;
-      }
-      if (c.h >= pos.tpPrice) {
-        close(pos, c.t, Math.max(c.o, pos.tpPrice), 'take_profit');
-        return;
-      }
-    }
-    if (useLive && pos.currentPrice != null) {
-      if (pos.currentPrice <= pos.slPrice) close(pos, nowSec, pos.currentPrice, 'stop_loss');
-      else if (pos.currentPrice >= pos.tpPrice) close(pos, nowSec, pos.currentPrice, 'take_profit');
-    }
-  };
   const close = (pos: Position, sec: number, price: number, reason: string) => {
     pos.status = 'closed';
     pos.exitTs = new Date(sec * 1000).toISOString();
@@ -462,12 +467,32 @@ async function compute(): Promise<PaperSnapshot> {
     if (openByMint.get(pos.mint) === pos) openByMint.delete(pos.mint);
   };
 
+  /** Scan candles after the entry candle (and optionally the live price) for TP/SL before `untilSec`. */
+  const evaluateExits = (pos: Position, untilSec: number, useLive: boolean) => {
+    if (pos.status !== 'open' || pos.entryPrice == null || pos.tpPrice == null || pos.slPrice == null) return;
+    const firstT = entryCandleEnd.get(pos.id) ?? Math.floor(Date.parse(pos.entryTs) / 1000);
+    let prevEnd = firstT;
+    for (const c of timelineMap.get(pos.mint) || []) {
+      if (c.t < firstT || c.t >= untilSec) continue;
+      // Unobserved gap before this candle: price may have crossed a level inside the gap.
+      // Conservative fills: TP at the TP level (not a higher gap open), SL at the (lower) open.
+      const gapped = c.t > prevEnd;
+      prevEnd = c.t + c.i;
+      // Stop-loss first (conservative; same order as helpers/exit-strategy.ts).
+      if (c.l <= pos.slPrice) return close(pos, c.t, Math.min(c.o, pos.slPrice), 'stop_loss');
+      if (c.h >= pos.tpPrice) return close(pos, c.t, gapped ? pos.tpPrice : Math.max(c.o, pos.tpPrice), 'take_profit');
+    }
+    if (useLive && pos.currentPrice != null) {
+      if (pos.currentPrice <= pos.slPrice) close(pos, nowSec, pos.currentPrice, 'stop_loss');
+      else if (pos.currentPrice >= pos.tpPrice) close(pos, nowSec, pos.currentPrice, 'take_profit');
+    }
+  };
+
   for (const d of decisions) {
     const sec = Math.floor(d.tsMs / 1000);
     const dex = dexCache.get(d.mint)?.pair || null;
     const symbol = d.symbol || dex?.symbol || shortAddress(d.mint);
     let effect = '';
-    // Before handling this decision, close any open position of the mint that hit TP/SL earlier.
     const existing = openByMint.get(d.mint);
     if (existing) evaluateExits(existing, sec, false);
     const stillOpen = openByMint.get(d.mint);
@@ -488,6 +513,7 @@ async function compute(): Promise<PaperSnapshot> {
           entryPrice: null,
           entryApprox: false,
           entrySource: '',
+          priceSources: sourceMap.get(d.mint) || [],
           sizeSol: (cfg.bankrollSol * pct) / 100,
           positionPercent: pct,
           tpPrice: null,
@@ -502,15 +528,29 @@ async function compute(): Promise<PaperSnapshot> {
           exitReason: null,
           pnlPct: null,
           pnlSol: null,
+          maxUpPct: null,
+          maxDownPct: null,
           notes: [],
+          chart: [],
+          candles: [],
+          change1h: dex?.change1h ?? null,
+          change24h: dex?.change24h ?? null,
+          volume24h: dex?.volume24h ?? null,
+          slTpPosition: null,
+          priceAt: dexCache.get(d.mint)?.at ? new Date(dexCache.get(d.mint)!.at).toISOString() : null,
         };
         const hist = priceNear(candleMap.get(d.mint) || [], sec);
         if (hist) {
           pos.entryPrice = hist.price;
-          pos.entrySource = hist.exact
-            ? `GeckoTerminal ${CANDLE_MIN}m open`
-            : `GeckoTerminal ${CANDLE_MIN}m (vela cercana)`;
+          const mins = Math.round(hist.candle.i / 60);
+          pos.entrySource = hist.exact ? `OHLCV ${mins}m (apertura de la vela)` : `OHLCV ${mins}m (vela cercana)`;
           if (!hist.exact) pos.entryApprox = true;
+          if (hist.candle.i > 3600) {
+            // Only a coarse (e.g. 4h) candle covers the entry → its open can be far from the real fill.
+            pos.entryApprox = true;
+            pos.entrySource += ' — aprox. (vela gruesa)';
+          }
+          entryCandleEnd.set(pos.id, hist.candle.t + hist.candle.i);
         } else {
           const key = `${d.mint}|${d.ts}`;
           if (!approx[key] && dex?.priceUsd) {
@@ -538,9 +578,7 @@ async function compute(): Promise<PaperSnapshot> {
       if (stillOpen) {
         stillOpen.holds += 1;
         effect = 'HOLD — mantiene posición, sin tamaño extra';
-      } else {
-        effect = 'HOLD sin posición abierta (ya cerrada por TP/SL o no abierta) — sin efecto';
-      }
+      } else effect = 'HOLD sin posición abierta (ya cerrada por TP/SL o no abierta) — sin efecto';
     } else if (d.action === 'EXIT') {
       if (stillOpen) {
         const hist = priceNear(candleMap.get(d.mint) || [], sec);
@@ -551,13 +589,9 @@ async function compute(): Promise<PaperSnapshot> {
           effect = 'Cierra posición papel (salida registrada en log)';
         } else effect = 'EXIT sin precio disponible';
       } else effect = 'EXIT sin posición abierta — sin efecto';
-    } else if (d.action === 'SKIP') {
-      effect = 'SKIP — sin posición';
-    } else if (d.action === 'LIVE_IGNORED') {
-      effect = 'Decisión LIVE — ignorada en papel';
-    } else {
-      effect = 'Sin efecto en papel';
-    }
+    } else if (d.action === 'SKIP') effect = 'SKIP — sin posición';
+    else if (d.action === 'LIVE_IGNORED') effect = 'Decisión LIVE — ignorada en papel';
+    else effect = 'Sin efecto en papel';
 
     timeline.push({
       ts: d.ts,
@@ -574,9 +608,9 @@ async function compute(): Promise<PaperSnapshot> {
   }
   if (approxDirty) saveApproxCache(approx);
 
-  // Final pass: exits up to now (candles + live price), then PnL.
+  // Final pass: exits up to now (candles + live price), PnL, excursions and chart series.
   for (const p of positions) {
-    evaluateExits(p, nowSec + CANDLE_SEC, true);
+    evaluateExits(p, nowSec + 86_400, true);
     const ref = p.status === 'closed' ? p.exitPrice : p.currentPrice;
     if (p.entryPrice != null && ref != null && p.entryPrice > 0) {
       p.pnlPct = (ref / p.entryPrice - 1) * 100;
@@ -584,17 +618,91 @@ async function compute(): Promise<PaperSnapshot> {
     } else if (p.status === 'open' && p.currentPrice == null) {
       gaps.push(`${p.symbol}: precio actual no disponible en DexScreener`);
     }
+    if (p.entryApprox) gaps.push(`${p.symbol}: precio de entrada aproximado (${p.entrySource})`);
     if (p.liquidityUsd != null && p.liquidityUsd < 5_000 && p.status === 'open') {
       p.notes.push(`liquidez muy baja (~$${Math.round(p.liquidityUsd)}) — salida real podría no ser posible`);
     }
+    const tl = timelineMap.get(p.mint) || [];
+    const entrySec = Math.floor(Date.parse(p.entryTs) / 1000);
+    const endSec = p.exitTs ? Math.floor(Date.parse(p.exitTs) / 1000) : nowSec;
+    const pts: [number, number][] = tl
+      .filter((c) => c.t >= entrySec - 6 * 3600 && c.t <= Math.min(nowSec, endSec + 12 * 3600))
+      .map((c) => [c.t + c.i, c.c]);
+    if (p.status === 'open' && p.currentPrice != null) pts.push([nowSec, p.currentPrice]);
+    p.chart = downsample(pts, 160);
+    p.candles = tl
+      .filter((c) => c.t + c.i > entrySec - 3600 && c.t <= endSec)
+      .slice(-28)
+      .map((c) => [c.t, c.o, c.h, c.l, c.c]);
+    const ref2 = p.status === 'closed' ? p.exitPrice : p.currentPrice;
+    if (ref2 != null && p.tpPrice != null && p.slPrice != null && p.tpPrice > p.slPrice) {
+      p.slTpPosition = Math.max(0, Math.min(1, (ref2 - p.slPrice) / (p.tpPrice - p.slPrice)));
+    }
+    if (p.entryPrice) {
+      const held = tl.filter((c) => c.t >= entrySec && c.t < endSec);
+      if (held.length) {
+        p.maxUpPct = (Math.max(...held.map((c) => c.h)) / p.entryPrice - 1) * 100;
+        p.maxDownPct = (Math.min(...held.map((c) => c.l)) / p.entryPrice - 1) * 100;
+      }
+    }
   }
 
-  const open = positions.filter((p) => p.status === 'open');
-  const closed = positions.filter((p) => p.status === 'closed');
+  // Equity curve: realized + mark-to-market (last candle close) PnL in SOL on an hourly grid.
+  const priced = positions.filter((p) => p.entryPrice != null && !p.entryApprox && p.pnlSol != null);
+  const equity: { t: number; pnlSol: number }[] = [];
+  if (priced.length) {
+    const first = Math.min(...priced.map((p) => Math.floor(Date.parse(p.entryTs) / 1000)));
+    const grid: number[] = [];
+    for (let t = Math.floor(first / 3600) * 3600; t < nowSec; t += 3600) grid.push(t);
+    for (const p of priced) {
+      grid.push(Math.floor(Date.parse(p.entryTs) / 1000));
+      if (p.exitTs) grid.push(Math.floor(Date.parse(p.exitTs) / 1000));
+    }
+    grid.push(nowSec);
+    const times = [...new Set(grid)].filter((t) => t >= first).sort((a, b) => a - b);
+    for (const t of times) {
+      let v = 0;
+      for (const p of priced) {
+        const e = Math.floor(Date.parse(p.entryTs) / 1000);
+        if (t < e) continue;
+        const x = p.exitTs ? Math.floor(Date.parse(p.exitTs) / 1000) : null;
+        if (x != null && t >= x) v += p.pnlSol as number;
+        else if (t >= nowSec) v += p.pnlSol as number;
+        else {
+          const c = closeAt(timelineMap.get(p.mint) || [], t);
+          if (c != null && !p.entryApprox) v += p.sizeSol * (c / (p.entryPrice as number) - 1);
+        }
+      }
+      equity.push({ t, pnlSol: v });
+    }
+  }
+  let peak = 0;
+  let maxDd = 0;
+  for (const e of equity) {
+    peak = Math.max(peak, e.pnlSol);
+    maxDd = Math.max(maxDd, peak - e.pnlSol);
+  }
+
+  // KPIs only use positions with a real (OHLCV) entry; approximated entries are shown but excluded.
+  const reliable = positions.filter((p) => p.entryPrice != null && !p.entryApprox);
+  const excluded = positions.filter((p) => !(p.entryPrice != null && !p.entryApprox));
+  const open = reliable.filter((p) => p.status === 'open');
+  const closed = reliable.filter((p) => p.status === 'closed');
   const sum = (xs: Position[]) => xs.reduce((a, p) => a + (p.pnlSol ?? 0), 0);
-  const wins = closed.filter((p) => (p.pnlPct ?? 0) > 0).length;
+  const winsL = closed.filter((p) => (p.pnlSol ?? 0) > 0);
+  const lossesL = closed.filter((p) => (p.pnlSol ?? 0) <= 0);
+  const grossWin = winsL.reduce((a, p) => a + (p.pnlSol as number), 0);
+  const grossLoss = -lossesL.reduce((a, p) => a + (p.pnlSol ?? 0), 0);
   const openUp = open.filter((p) => (p.pnlPct ?? 0) > 0).length;
-  const priced = positions.filter((p) => p.pnlPct != null);
+  const withPnl = reliable.filter((p) => p.pnlPct != null);
+  const best = withPnl.reduce<Position | null>(
+    (b, p) => (!b || (p.pnlPct as number) > (b.pnlPct as number) ? p : b),
+    null,
+  );
+  const worst = withPnl.reduce<Position | null>(
+    (b, p) => (!b || (p.pnlPct as number) < (b.pnlPct as number) ? p : b),
+    null,
+  );
   const realized = sum(closed);
   const unrealized = sum(open);
   const skipReasons = decisions
@@ -607,19 +715,31 @@ async function compute(): Promise<PaperSnapshot> {
     }));
 
   const totals = {
-    trades: positions.length,
+    trades: reliable.length,
+    excludedApprox: excluded.map((p) => ({ symbol: p.symbol, status: p.status, reason: p.entrySource })),
     openCount: open.length,
     closedCount: closed.length,
-    wins,
-    losses: closed.length - wins,
-    winRateClosed: closed.length ? (wins / closed.length) * 100 : null,
-    winRateAllMarked: priced.length ? ((wins + openUp) / priced.length) * 100 : null,
+    wins: winsL.length,
+    losses: lossesL.length,
+    winRateClosed: closed.length ? (winsL.length / closed.length) * 100 : null,
+    winRateAllMarked: withPnl.length ? ((winsL.length + openUp) / withPnl.length) * 100 : null,
+    profitFactor: grossLoss > 0 ? grossWin / grossLoss : null,
+    profitFactorInfinite: grossLoss === 0 && grossWin > 0,
+    avgWinPct: winsL.length ? winsL.reduce((a, p) => a + (p.pnlPct as number), 0) / winsL.length : null,
+    avgLossPct: lossesL.length ? lossesL.reduce((a, p) => a + (p.pnlPct ?? 0), 0) / lossesL.length : null,
+    maxDrawdownSol: maxDd,
+    maxDrawdownPctBankroll: (maxDd / cfg.bankrollSol) * 100,
+    best: best ? { symbol: best.symbol, pnlPct: best.pnlPct, pnlSol: best.pnlSol, status: best.status } : null,
+    worst: worst ? { symbol: worst.symbol, pnlPct: worst.pnlPct, pnlSol: worst.pnlSol, status: worst.status } : null,
     realizedSol: realized,
     unrealizedSol: unrealized,
     totalSol: realized + unrealized,
     totalPctBankroll: ((realized + unrealized) / cfg.bankrollSol) * 100,
     deployedSol: open.reduce((a, p) => a + p.sizeSol, 0),
-    avgPnlPct: priced.length ? priced.reduce((a, p) => a + (p.pnlPct as number), 0) / priced.length : null,
+    avgPnlPct: withPnl.length ? withPnl.reduce((a, p) => a + (p.pnlPct as number), 0) / withPnl.length : null,
+    approxEntries: excluded.length,
+    realEntries: reliable.length,
+    allPositions: positions.length,
     skips: skipReasons.length,
     skipReasons,
     holds: decisions.filter((d) => d.action === 'HOLD').length,
@@ -627,38 +747,103 @@ async function compute(): Promise<PaperSnapshot> {
     decisions: decisions.length,
   };
 
+  // Pipeline actor counts for the control-room diagram (all derived from the decisions log).
+  const promesa = decisions.filter((d) => d.source === 'promesa_handoff');
+  const botSrc = decisions.filter((d) => d.source !== 'promesa_handoff');
+  let kolscanWallets = 0;
+  try {
+    const k = JSON.parse(fs.readFileSync(path.join(ROOT, 'kolscan-top10-monthly.json'), 'utf8'));
+    kolscanWallets = Array.isArray(k.wallets) ? k.wallets.length : 0;
+  } catch {
+    kolscanWallets = 0;
+  }
+  const liveStatus = readLiveStatus();
+  const pipeline = {
+    promesa: {
+      handoffs: new Set(promesa.map((d) => d.ts)).size,
+      decisions: promesa.length,
+      enters: promesa.filter((d) => d.action === 'DRY_RUN_ENTER').length,
+      skips: promesa.filter((d) => d.action === 'SKIP').length,
+      holds: promesa.filter((d) => d.action === 'HOLD').length,
+      lastHandoff: promesa.length ? promesa[promesa.length - 1].ts : null,
+    },
+    kolscan: {
+      wallets: kolscanWallets,
+      signals: botSrc.filter((d) => /copy-trade/i.test(d.reason)).length,
+      botDecisions: botSrc.length,
+    },
+    filters: {
+      skips: decisions.filter((d) => d.action === 'SKIP').length,
+      passed: decisions.filter((d) => d.action === 'DRY_RUN_ENTER').length,
+      duplicatesBlocked: positions.reduce((a, p) => a + p.duplicateEnters, 0),
+    },
+    risk: {
+      killSwitchTripped: !!liveStatus.killSwitch.tripped,
+      killSwitchPresent: !!liveStatus.killSwitch.present,
+      stopLosses: closed.filter((p) => p.exitReason === 'stop_loss').length,
+      takeProfits: closed.filter((p) => p.exitReason === 'take_profit').length,
+      maxPositionPercent: cfg.positionPercent,
+    },
+    executor: {
+      mode: liveStatus.effectiveMode,
+      paperFills: positions.length + positions.filter((p) => p.status === 'closed').length,
+      paperEntries: positions.length,
+      paperExits: positions.filter((p) => p.status === 'closed').length,
+    },
+  };
+
   return {
     readOnly: true,
     mode: 'dry-run',
+    pipeline,
     banner: 'DRY-RUN / papel — sin dinero real',
     disclaimer:
       'Rendimiento simulado en papel. Rentabilidades pasadas no garantizan resultados futuros. ' +
       'No incluye slippage, comisiones, MEV, fallos de red ni la liquidez real para salir.',
     config: cfg,
-    open,
-    closed,
+    status: liveStatus,
+    priceSources: priceSourcesStatus(),
+    open: positions.filter((p) => p.status === 'open'),
+    closed: positions.filter((p) => p.status === 'closed'),
     totals,
+    equity,
     timeline: timeline.reverse(),
+    sources: [...allSources],
     gaps: [...new Set(gaps)],
     computedAt: new Date().toISOString(),
     computeMs: Date.now() - started,
   };
 }
 
+function loadApproxCache(): Record<string, { price: number; observedAt: string }> {
+  try {
+    return JSON.parse(fs.readFileSync(APPROX_CACHE_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+function saveApproxCache(c: Record<string, { price: number; observedAt: string }>): void {
+  try {
+    fs.mkdirSync(path.dirname(APPROX_CACHE_FILE), { recursive: true });
+    fs.writeFileSync(APPROX_CACHE_FILE, JSON.stringify(c, null, 2));
+  } catch {
+    /* non-fatal */
+  }
+}
+
 let snapshot: PaperSnapshot | null = null;
 let inflight: Promise<PaperSnapshot> | null = null;
 
-/** Returns a cached snapshot (refreshed at most every ~60s). */
+/** Returns a cached snapshot (refreshed at most every ~60s; stale data served while refreshing). */
 export async function getPaperSnapshot(): Promise<PaperSnapshot> {
   const fresh = snapshot && Date.now() - Date.parse(snapshot.computedAt) < SNAPSHOT_TTL_MS;
   if (fresh) return snapshot as PaperSnapshot;
   if (!inflight) {
-    inflight = compute()
+    inflight = computePaperSnapshot()
       .then((s) => (snapshot = s))
       .finally(() => {
         inflight = null;
       });
   }
-  // Serve stale data immediately while refreshing, if we have any.
   return snapshot ?? inflight;
 }

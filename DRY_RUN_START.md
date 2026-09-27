@@ -97,35 +97,50 @@ El panel muestra modo DRY/LIVE, kill switch, feed de `logs/decisions.jsonl` y el
 - No pegues `PRIVATE_KEY` en chats.
 - Ver `SECURITY_NOTES.md`.
 
-## 9. Ver el rendimiento en papel (dashboard, solo lectura)
+## 9. Ver el rendimiento en papel (dashboard "control room", solo lectura)
 
 ```bash
-npm run dashboard
+npm run dashboard            # http://127.0.0.1:8787/paper  (JSON: /api/paper)
+npm run dashboard:snapshot   # HTML estático autocontenido → dashboard/snapshots/paper-<fecha>.html
 ```
 
-- Panel principal: <http://127.0.0.1:8787>
-- **Rendimiento en papel (DRY-RUN):** <http://127.0.0.1:8787/paper> (JSON: `/api/paper`)
+- Panel principal: <http://127.0.0.1:8787> · **Control room papel:** <http://127.0.0.1:8787/paper>
+- Solo GET: sin botones de trading, sin POST. Se refresca cada 60 s ("ACT." + cuenta atrás).
+- El snapshot lleva los datos embebidos y gráficos SVG inline: se abre sin conexión y se puede enviar
+  (la carpeta `dashboard/snapshots/` está en `.gitignore`).
 
-Qué hace (sin dinero real, sin botones de trading, solo GET):
+Qué muestra (todo calculado de `logs/decisions.jsonl` + precios públicos, nada inventado):
 
-- Cada `DRY_RUN_ENTER` de `logs/decisions.jsonl` abre una posición en papel (hora de entrada = `ts`).
-  Un `ENTER` repetido del mismo mint con la posición abierta **no añade tamaño** (cuenta como HOLD).
+- **Cabecera:** modo PAPER/LIVE según `LIVE_TRADING` (solo se lee el booleano), estado del kill switch
+  (`.bot-state/daily-loss.json`), última actualización y la píldora DRY-RUN.
+- **Ticker:** tokens con precio DexScreener, variación 24 h y PnL papel.
+- **Position radar:** una tarjeta por posición (PnL %, velas, barra SL→TP con la posición del precio).
+  Filtros abierta/cerrada/fuente. Clic = gráfico grande con líneas de entrada/TP/SL.
+- **Control room:** diagrama PROMESA / Kolscan / Filtros / Riesgo / Ejecutor Jupiter → CORE con conteos
+  reales (handoffs, entradas, skips, TP/SL, fills en papel) + KPIs (win rate, profit factor, PnL total,
+  máx. drawdown).
+- **Telemetría:** exposición (SOL desplegado / bankroll), barras por actor, curva de equity, volumen 24 h
+  y *decision tape* (ENTER/SKIP/HOLD/EXIT).
+
+Reglas de la simulación:
+
+- Cada `DRY_RUN_ENTER` abre una posición en papel (hora = `ts`). Un `ENTER` repetido del mismo mint con la
+  posición abierta **no añade tamaño** (HOLD). Si la posición ya se cerró por TP/SL, un nuevo ENTER abre otra.
   También entiende el formato antiguo del bot (`side: enter|exit|skip`).
-- **Precio de entrada:** apertura de la vela de 15 min de GeckoTerminal que contiene `ts`
-  (reutiliza `backtest/fetch_ohlcv.ts`). Si GeckoTerminal no responde (429 frecuente), se usa el
-  primer precio observado en DexScreener y se marca **"entry approx"**; en cuanto llegan las velas,
-  se sustituye por el precio histórico.
-- **Precio actual:** DexScreener (`/latest/dex/tokens/<mint>`, par con más liquidez), caché ~60 s y
-  pausa automática si devuelve 429.
-- **Salidas en papel:** `TAKE_PROFIT` / `STOP_LOSS` (%) leídos de `process.env` → `.env` → `.env.copy`
-  (por defecto del repo: TP +40 %, SL −20 %; si no existen, TP +100 % / SL −30 %). Se revisan las velas
-  posteriores a la entrada (SL primero, conservador). No se aplica el timeout `PRICE_CHECK_DURATION`.
-- **Tamaño:** `max_position_percent` de cada decisión (2,5 %) sobre `PAPER_BANKROLL_SOL` (por defecto 1 SOL).
-  Ejemplo: `PAPER_BANKROLL_SOL=5 npm run dashboard`.
-- Muestra: posiciones abiertas y cerradas (PnL % y en SOL), totales (PnL, win rate, nº trades,
-  skips con motivos) y la línea temporal de decisiones.
-- Cachés locales en `.bot-state/` (gitignored): `paper-ohlcv/` y `paper-entry-approx.json`.
-  Bórralos si quieres recalcular desde cero.
+- **Precio de entrada:** apertura de la vela OHLCV más fina que contiene `ts`. Fuentes, por orden:
+  1. importaciones locales: `backtest/data/<mint>-<N>m.jsonl` (de `npm run backtest:fetch -- --mint <MINT> --aggregate 15`)
+     y `.bot-state/paper-ohlcv-import/<mint>.json`;
+  2. GeckoTerminal (sin clave; pool de DexScreener y, si falla, el pool principal de GeckoTerminal);
+  3. CoinGecko on-chain si defines `COINGECKO_API_KEY` (clave demo gratuita; `COINGECKO_API_PLAN=pro` si es de pago);
+  4. Birdeye si defines `BIRDEYE_API_KEY`.
+  Si nada responde, se usa el primer precio DexScreener observado y se marca **ENTRY APPROX**; esas posiciones
+  se muestran pero **no cuentan en los KPIs**. Axiom no tiene API pública documentada de precios → no soportado.
+- **Precio actual:** DexScreener (`/latest/dex/tokens/<mint>`, par con más liquidez), caché ~60 s, pausa si 429.
+- **Salidas:** `TAKE_PROFIT` / `STOP_LOSS` (%) de `process.env` → `.env` → `.env.copy` (repo: TP +40 %, SL −20 %;
+  si faltan, +100 % / −30 %). SL se evalúa antes que TP; si hay un hueco sin velas, el TP se llena al nivel TP.
+  No se aplica el timeout `PRICE_CHECK_DURATION`.
+- **Tamaño:** `max_position_percent` (2,5 %) de `PAPER_BANKROLL_SOL` (por defecto 1 SOL).
+- Cachés en `.bot-state/` (gitignored). Bórralas para recalcular desde cero.
 
-⚠️ Simulación: rentabilidades pasadas no garantizan resultados futuros. No incluye slippage,
-comisiones, MEV ni la liquidez real para salir (tokens con liquidez muy baja se marcan en "Notas").
+⚠️ Simulación: rentabilidades pasadas no garantizan resultados futuros. No incluye slippage, comisiones, MEV
+ni la liquidez real para salir.
