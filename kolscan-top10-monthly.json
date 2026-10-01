@@ -1,67 +1,77 @@
 {
  "source": "https://kolscan.io/leaderboard",
  "timeframe_days": 30,
- "updated": "2026-09-30",
+ "updated": "2026-10-01",
  "wallets": [
   {
    "rank": 1,
    "name": "LJC",
    "wallet": "6HJetMbdHBuk3mLUainxAPpBpWzDgYbHGTS2TqDAUSX2",
-   "x": "@OnlyLJC"
+   "x": "@OnlyLJC",
+   "profit_sol": 6282.86
   },
   {
    "rank": 2,
    "name": "decu",
    "wallet": "4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9",
-   "x": "@notdecu"
+   "x": "@notdecu",
+   "profit_sol": 3936.21
   },
   {
    "rank": 3,
    "name": "trunoest",
    "wallet": "ardinRsN1mNYVeoJWTBsWeYeXvuR9UUDGMsCDKpb6AT",
-   "x": "@trunoest"
+   "x": "@trunoest",
+   "profit_sol": 3532.66
   },
   {
    "rank": 4,
    "name": "Cented",
    "wallet": "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o",
-   "x": "@Cented7"
+   "x": "@Cented7",
+   "profit_sol": 3225.72
   },
   {
    "rank": 5,
    "name": "Mr. Frog",
    "wallet": "4DdrfiDHpmx55i4SPssxVzS9ZaKLb8qr45NKY9Er9nNh",
-   "x": "@TheMisterFrog"
+   "x": "@TheMisterFrog",
+   "profit_sol": 2625.59
   },
   {
    "rank": 6,
-   "name": "theo",
-   "wallet": "Bi4rd5FH5bYEN8scZ7wevxNZyNmKHdaBcvewdPFxYdLt",
-   "x": "@theonomix"
+   "name": "Kadenox",
+   "wallet": "B32QbbdDAyhvUQzjcaM5j6ZVKwjCxAwGH5Xgvb9SJqnC",
+   "x": "@kadenox",
+   "profit_sol": 2021.26
   },
   {
    "rank": 7,
-   "name": "Kadenox",
-   "wallet": "B32QbbdDAyhvUQzjcaM5j6ZVKwjCxAwGH5Xgvb9SJqnC",
-   "x": "@kadenox"
+   "name": "theo",
+   "wallet": "Bi4rd5FH5bYEN8scZ7wevxNZyNmKHdaBcvewdPFxYdLt",
+   "x": "@theonomix",
+   "profit_sol": 1887.21
   },
   {
    "rank": 8,
-   "name": "OGAntD",
-   "wallet": "215nhcAHjQQGgwpQSJQ7zR26etbjjtVdW74NLzwEgQjP",
-   "x": "@0GAntD"
+   "name": "Kaaox",
+   "wallet": "3j5c4aD1aznxQXJ3DWw1b7UD8kKuaqXVbpaVeWPR83TG",
+   "x": "@xKaaox",
+   "profit_sol": 1698.57
   },
   {
    "rank": 9,
-   "name": "Dani",
-   "wallet": "AuPp4YTMTyqxYXQnHc5KUc6pUuCSsHQpBJhgnD45yqrf",
-   "x": "@DaniWorldwide"
+   "name": "OGAntD",
+   "wallet": "215nhcAHjQQGgwpQSJQ7zR26etbjjtVdW74NLzwEgQjP",
+   "x": "@0GAntD",
+   "profit_sol": 1500.86
   },
   {
    "rank": 10,
-   "name": "Schoen",
-   "wallet": "5hAgYC8TJCcEZV7LTXAzkTrm7YL29YXyQQJPCNrG84zM",
-   "x": "@Schoen_xyz"
+   "name": "Dani",
+   "wallet": "AuPp4YTMTyqxYXQnHc5KUc6pUuCSsHQpBJhgnD45yqrf",
+   "x": "@DaniWorldwide",
+   "profit_sol": 1345.85
   }
  ]
 }
