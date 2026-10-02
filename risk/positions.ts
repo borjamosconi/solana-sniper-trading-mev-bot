@@ -24,6 +24,15 @@ export class PositionBook {
     return [...this.positions.keys()];
   }
 
+  /** Sum of entry quote amounts across open positions (raw units). */
+  get totalOpenExposure(): bigint {
+    let total = 0n;
+    for (const position of this.positions.values()) {
+      total += position.entryQuoteAmount;
+    }
+    return total;
+  }
+
   has(mint: string): boolean {
     return this.positions.has(mint);
   }

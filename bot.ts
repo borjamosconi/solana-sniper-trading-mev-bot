@@ -41,7 +41,9 @@ import BN from 'bn.js';
 import { WarpTransactionExecutor } from './transactions/warp-transaction-executor';
 import { JitoTransactionExecutor } from './transactions/jito-rpc-transaction-executor';
 import { CircuitBreaker } from './risk/circuit-breaker';
+import { DailyLossKillSwitch } from './risk/daily-loss-kill-switch';
 import { PositionBook } from './risk/positions';
+import { logDecision } from './helpers/decision-log';
 
 export interface BotConfig {
   wallet: Keypair;
@@ -74,9 +76,12 @@ export interface BotConfig {
   pumpFunBuyAmountSol?: number;
   pumpFunMaxCurveProgress?: number;
   dryRun: boolean;
+  liveTrading: boolean;
   maxOpenPositions: number;
   maxDailyRaydiumBuys: number;
   maxDailyPumpFunBuySol: number;
+  maxPositionPercent: number;
+  minPoolAgeSeconds: number;
   trailingStop: number;
   trailingStopActivation: number;
   takeProfitSellPercent: number;
@@ -110,6 +115,7 @@ export class Bot {
     private readonly pumpFunStorage: PumpFunCache = new PumpFunCache(),
     private readonly jupiter: JupiterClient = new JupiterClient(''),
     private readonly breaker: CircuitBreaker = new CircuitBreaker(4, 300_000),
+    private readonly killSwitch: DailyLossKillSwitch = new DailyLossKillSwitch(10, false),
   ) {
     this.isWarp = txExecutor instanceof WarpTransactionExecutor;
     this.isJito = txExecutor instanceof JitoTransactionExecutor;
@@ -138,10 +144,17 @@ export class Bot {
       mints: this.positions.openMints,
       dailyRaydiumBuys: this.dailyRaydiumBuys,
       circuitPaused: this.breaker.isPaused,
+      killSwitchTripped: this.killSwitch.isTripped,
+      killSwitch: this.killSwitch.snapshot,
+      dryRun: this.config.dryRun,
+      liveTrading: this.config.liveTrading,
     };
   }
 
   async validate() {
+    if (!this.config.liveTrading) {
+      logger.warn('LIVE_TRADING is not enabled — forcing dry-run. Set LIVE_TRADING=true to broadcast real transactions.');
+    }
     if (this.config.dryRun) {
       logger.warn('DRY_RUN is enabled, skipping startup wallet ATA validation and network execution.');
       return true;
@@ -161,26 +174,38 @@ export class Bot {
 
   public async buy(accountId: PublicKey, poolState: LiquidityStateV4) {
     logger.trace({ mint: poolState.baseMint }, `Processing new pool...`);
+    const baseMint = poolState.baseMint.toString();
 
-    if (!this.breaker.assertCanTrade('raydium-buy')) return;
-    if (this.config.useSnipeList && !this.snipeListCache?.isInList(poolState.baseMint.toString())) {
-      logger.debug({ mint: poolState.baseMint.toString() }, `Skipping buy because token is not in a snipe list`);
+    if (!(await this.assertBuyAllowed('raydium-buy', baseMint))) return;
+
+    if (this.config.useSnipeList && !this.snipeListCache?.isInList(baseMint)) {
+      logger.debug({ mint: baseMint }, `Skipping buy because token is not in a snipe list`);
+      this.skipDecision(baseMint, 'not_in_snipe_list', 'raydium');
       return;
     }
 
-    const baseMint = poolState.baseMint.toString();
     if (this.positions.isOnCooldown(baseMint)) {
       logger.debug({ mint: baseMint }, 'Skipping buy because mint is in post-sell cooldown');
+      this.skipDecision(baseMint, 'buy_cooldown', 'raydium');
       return;
     }
 
     this.resetDailyRiskCountersIfNeeded();
-    if (!this.canOpenNewPosition(baseMint)) return;
+    if (!this.canOpenNewPosition(baseMint)) {
+      this.skipDecision(baseMint, 'max_open_positions', 'raydium');
+      return;
+    }
     if (this.dailyRaydiumBuys >= this.config.maxDailyRaydiumBuys) {
       logger.warn(
         { maxDailyRaydiumBuys: this.config.maxDailyRaydiumBuys },
         'Skipping buy because max daily Raydium buys limit was reached',
       );
+      this.skipDecision(baseMint, 'max_daily_raydium_buys', 'raydium');
+      return;
+    }
+
+    if (!(await this.waitForMinPoolAge(poolState.poolOpenTime.toString(), baseMint))) {
+      this.skipDecision(baseMint, 'min_pool_age', 'raydium');
       return;
     }
 
@@ -212,6 +237,7 @@ export class Bot {
         const match = await this.filterMatch(poolKeys);
         if (!match) {
           logger.trace({ mint: poolKeys.baseMint.toString() }, `Skipping buy because pool doesn't match filters`);
+          this.skipDecision(poolKeys.baseMint.toString(), 'filters_mismatch', 'raydium');
           return;
         }
       }
@@ -223,13 +249,18 @@ export class Bot {
             `Send buy transaction attempt: ${i + 1}/${this.config.maxBuyRetries}`,
           );
           const tokenOut = new Token(TOKEN_PROGRAM_ID, poolKeys.baseMint, poolKeys.baseDecimals);
+          const buyAmount = await this.capBuyAmount(this.config.quoteAmount);
+          if (buyAmount.isZero()) {
+            this.skipDecision(baseMint, 'position_size_zero', 'raydium');
+            return;
+          }
           const result = await this.swap(
             poolKeys,
             this.config.quoteAta,
             mintAta,
             this.config.quoteToken,
             tokenOut,
-            this.config.quoteAmount,
+            buyAmount,
             this.config.buySlippage,
             this.config.wallet,
             'buy',
@@ -240,13 +271,24 @@ export class Bot {
             this.positions.open({
               mint: baseMint,
               dex: 'raydium',
-              entryQuoteAmount: BigInt(this.config.quoteAmount.raw.toString()),
+              entryQuoteAmount: BigInt(buyAmount.raw.toString()),
               tokenAmount: 0n,
               openedAt: Date.now(),
               scaledOut: false,
             });
             this.dailyRaydiumBuys++;
             this.breaker.recordSuccess();
+            logDecision({
+              ts: new Date().toISOString(),
+              mint: baseMint,
+              side: 'enter',
+              reason: 'raydium_buy_confirmed',
+              size: buyAmount.toFixed(),
+              dryRun: this.config.dryRun,
+              live: this.config.liveTrading && !this.config.dryRun,
+              dex: 'raydium',
+              signature: result.signature,
+            });
             logger.info(
               {
                 mint: poolState.baseMint.toString(),
@@ -339,7 +381,7 @@ export class Bot {
             logger.info({ mint, restReason }, 'Remaining position exit condition reached');
             await this.executeRaydiumSell(poolKeys, accountId, tokenIn, remaining, true);
           } else {
-            this.positions.close(mint);
+            this.recordExitAndClose(mint, undefined, 'raydium_scaleout_complete');
           }
           return;
         }
@@ -362,23 +404,42 @@ export class Bot {
 
     const mintStr = mint.toString();
     if (mint.equals(this.config.quoteToken.mint) || mintStr === SOL_MINT) return;
-    if (!this.breaker.assertCanTrade('copy-buy')) return;
-    if (this.config.useSnipeList && !this.snipeListCache?.isInList(mintStr)) return;
-    if (this.positions.isOnCooldown(mintStr) || this.positions.has(mintStr)) return;
+    if (!(await this.assertBuyAllowed('copy-buy', mintStr))) return;
+    if (this.config.useSnipeList && !this.snipeListCache?.isInList(mintStr)) {
+      this.skipDecision(mintStr, 'not_in_snipe_list', 'copy');
+      return;
+    }
+    if (this.positions.isOnCooldown(mintStr) || this.positions.has(mintStr)) {
+      this.skipDecision(mintStr, 'cooldown_or_open', 'copy');
+      return;
+    }
 
     this.resetDailyRiskCountersIfNeeded();
-    if (!this.canOpenNewPosition(mintStr)) return;
-    if (this.dailyRaydiumBuys >= this.config.maxDailyRaydiumBuys) return;
+    if (!this.canOpenNewPosition(mintStr)) {
+      this.skipDecision(mintStr, 'max_open_positions', 'copy');
+      return;
+    }
+    if (this.dailyRaydiumBuys >= this.config.maxDailyRaydiumBuys) {
+      this.skipDecision(mintStr, 'max_daily_raydium_buys', 'copy');
+      return;
+    }
+
+    const buyAmount = await this.capBuyAmount(this.config.quoteAmount);
+    if (buyAmount.isZero()) {
+      this.skipDecision(mintStr, 'position_size_zero', 'copy');
+      return;
+    }
 
     logger.info({ mint: mintStr }, 'Copy-trade buy via Jupiter');
     const quote = await this.jupiter.quote({
       inputMint: this.config.quoteToken.mint.toBase58(),
       outputMint: mintStr,
-      amount: this.config.quoteAmount.raw.toString(),
+      amount: buyAmount.raw.toString(),
       slippageBps: Math.floor(this.config.buySlippage * 100),
     });
     if (!quote) {
       logger.debug({ mint: mintStr }, 'Copy-trade skipped — no Jupiter route yet');
+      this.skipDecision(mintStr, 'no_jupiter_route', 'copy');
       return;
     }
 
@@ -387,12 +448,22 @@ export class Bot {
       this.positions.open({
         mint: mintStr,
         dex: 'copy',
-        entryQuoteAmount: BigInt(this.config.quoteAmount.raw.toString()),
+        entryQuoteAmount: BigInt(buyAmount.raw.toString()),
         tokenAmount: BigInt(quote.outAmount),
         openedAt: Date.now(),
         scaledOut: false,
       });
       this.dailyRaydiumBuys++;
+      logDecision({
+        ts: new Date().toISOString(),
+        mint: mintStr,
+        side: 'enter',
+        reason: 'copy_buy_confirmed',
+        size: buyAmount.toFixed(),
+        dryRun: this.config.dryRun,
+        live: this.config.liveTrading && !this.config.dryRun,
+        dex: 'copy',
+      });
     }
   }
 
@@ -408,13 +479,15 @@ export class Bot {
     direction: 'buy' | 'sell',
     closeAtaOnSell: boolean,
   ) {
-    if (this.config.dryRun) {
+    if (!this.config.liveTrading || this.config.dryRun) {
       logger.info(
         {
           mint: poolKeys.baseMint.toString(),
           direction,
           amountIn: amountIn.toFixed(),
           slippage,
+          liveTrading: this.config.liveTrading,
+          dryRun: this.config.dryRun,
         },
         'DRY_RUN: skipping on-chain Raydium swap transaction',
       );
@@ -524,7 +597,9 @@ export class Bot {
         );
 
         if (result.confirmed) {
-          if (closeAta) this.positions.close(mint);
+          if (closeAta) {
+            this.recordExitAndClose(mint, undefined, 'raydium_sell');
+          }
           this.breaker.recordSuccess();
           logger.info(
             {
@@ -604,14 +679,18 @@ export class Bot {
 
     const filled = await this.executeJupiterQuote(quote, `jupiter-sell:${mint}`);
     if (filled && closePosition) {
-      this.positions.close(mint);
+      const proceeds = BigInt(quote.outAmount);
+      this.recordExitAndClose(mint, proceeds, 'jupiter_sell');
     }
     return filled;
   }
 
   private async executeJupiterQuote(quote: { outAmount: string; [key: string]: unknown }, context: string): Promise<boolean> {
-    if (this.config.dryRun) {
-      logger.info({ context, outAmount: quote.outAmount }, 'DRY_RUN: skipping Jupiter swap');
+    if (!this.config.liveTrading || this.config.dryRun) {
+      logger.info(
+        { context, outAmount: quote.outAmount, liveTrading: this.config.liveTrading, dryRun: this.config.dryRun },
+        'DRY_RUN: skipping Jupiter swap',
+      );
       return true;
     }
 
@@ -689,15 +768,22 @@ export class Bot {
     const mintStr = mint.toString();
     logger.trace({ mint: mintStr }, `Processing new pump.fun token...`);
 
-    if (!this.breaker.assertCanTrade('pumpfun-buy')) return;
+    if (!(await this.assertBuyAllowed('pumpfun-buy', mintStr))) return;
     if (this.config.useSnipeList && !this.snipeListCache?.isInList(mintStr)) {
       logger.debug({ mint: mintStr }, `Skipping pump.fun buy (not on snipe list)`);
+      this.skipDecision(mintStr, 'not_in_snipe_list', 'pumpfun');
       return;
     }
-    if (this.positions.isOnCooldown(mintStr)) return;
+    if (this.positions.isOnCooldown(mintStr)) {
+      this.skipDecision(mintStr, 'buy_cooldown', 'pumpfun');
+      return;
+    }
 
     this.resetDailyRiskCountersIfNeeded();
-    if (!this.canOpenNewPosition(mintStr)) return;
+    if (!this.canOpenNewPosition(mintStr)) {
+      this.skipDecision(mintStr, 'max_open_positions', 'pumpfun');
+      return;
+    }
 
     if (this.config.oneTokenAtATime) {
       if (this.mutex.isLocked() || this.sellExecutionCount > 0) {
@@ -733,7 +819,13 @@ export class Bot {
         return;
       }
 
-      const solInLamports = BigInt(Math.floor((this.config.pumpFunBuyAmountSol ?? 0.001) * 1_000_000_000));
+      const requestedSol = this.config.pumpFunBuyAmountSol ?? 0.001;
+      const cappedSol = await this.capPumpFunBuySol(requestedSol);
+      if (cappedSol <= 0) {
+        this.skipDecision(mintStr, 'position_size_zero', 'pumpfun');
+        return;
+      }
+      const solInLamports = BigInt(Math.floor(cappedSol * 1_000_000_000));
       const nextDailyPumpFunTotal = this.dailyPumpFunBuyLamports + solInLamports;
       const maxDailyPumpFunLamports = BigInt(Math.floor(this.config.maxDailyPumpFunBuySol * 1_000_000_000));
       if (nextDailyPumpFunTotal > maxDailyPumpFunLamports) {
@@ -785,6 +877,17 @@ export class Bot {
             });
             this.dailyPumpFunBuyLamports = nextDailyPumpFunTotal;
             this.breaker.recordSuccess();
+            logDecision({
+              ts: new Date().toISOString(),
+              mint: mintStr,
+              side: 'enter',
+              reason: 'pumpfun_buy_confirmed',
+              size: cappedSol,
+              dryRun: this.config.dryRun,
+              live: this.config.liveTrading && !this.config.dryRun,
+              dex: 'pumpfun',
+              signature: result.signature,
+            });
             logger.info(
               {
                 mint: mintStr,
@@ -867,7 +970,7 @@ export class Bot {
           });
 
           if (result.confirmed) {
-            this.positions.close(mintStr);
+            this.recordExitAndClose(mintStr, solOut, 'pumpfun_sell');
             this.breaker.recordSuccess();
             logger.info(
               {
@@ -906,8 +1009,11 @@ export class Bot {
     amount: bigint;
     maxSolCost: bigint;
   }) {
-    if (this.config.dryRun) {
-      logger.info({ mint: params.mint.toString() }, 'DRY_RUN: skipping on-chain pump.fun buy transaction');
+    if (!this.config.liveTrading || this.config.dryRun) {
+      logger.info(
+        { mint: params.mint.toString(), liveTrading: this.config.liveTrading, dryRun: this.config.dryRun },
+        'DRY_RUN: skipping on-chain pump.fun buy transaction',
+      );
       return { confirmed: true, signature: 'dry-run' };
     }
 
@@ -962,8 +1068,11 @@ export class Bot {
     amount: bigint;
     minSolOutput: bigint;
   }) {
-    if (this.config.dryRun) {
-      logger.info({ mint: params.mint.toString() }, 'DRY_RUN: skipping on-chain pump.fun sell transaction');
+    if (!this.config.liveTrading || this.config.dryRun) {
+      logger.info(
+        { mint: params.mint.toString(), liveTrading: this.config.liveTrading, dryRun: this.config.dryRun },
+        'DRY_RUN: skipping on-chain pump.fun sell transaction',
+      );
       return { confirmed: true, signature: 'dry-run' };
     }
 
@@ -1095,5 +1204,160 @@ export class Bot {
 
   private getUtcDayKey(): string {
     return new Date().toISOString().slice(0, 10);
+  }
+
+  private async assertBuyAllowed(action: string, mint: string): Promise<boolean> {
+    if (!this.breaker.assertCanTrade(action)) {
+      this.skipDecision(mint, 'circuit_breaker', action);
+      return false;
+    }
+    if (!this.killSwitch.assertCanBuy(action)) {
+      this.skipDecision(mint, 'daily_loss_kill_switch', action);
+      return false;
+    }
+    try {
+      const capital = await this.estimateQuoteCapitalRaw();
+      this.killSwitch.ensureCapitalSnapshot(capital);
+      // Conservative unrealized: treat open exposure as mark-to-zero risk floor (no MTM).
+      this.killSwitch.evaluateWithUnrealized(0n);
+      if (!this.killSwitch.assertCanBuy(action)) {
+        this.skipDecision(mint, 'daily_loss_kill_switch', action);
+        return false;
+      }
+    } catch (error) {
+      logger.debug({ error, action }, 'Failed to refresh kill-switch capital snapshot');
+    }
+    return true;
+  }
+
+  private async waitForMinPoolAge(poolOpenTimeRaw: string, mint: string): Promise<boolean> {
+    const minAge = this.config.minPoolAgeSeconds ?? 0;
+    if (minAge <= 0) return true;
+
+    const poolOpenTime = Number(poolOpenTimeRaw);
+    if (!Number.isFinite(poolOpenTime) || poolOpenTime <= 0) {
+      logger.debug({ mint }, 'poolOpenTime missing — skipping min pool age check');
+      return true;
+    }
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const age = nowSec - poolOpenTime;
+    if (age >= minAge) return true;
+
+    // Pool is younger than required: wait until it ages in (keeps sniping viable with a delay).
+    const waitMs = (minAge - age) * 1000;
+    // Cap wait at 5 minutes to avoid hanging forever on bad timestamps.
+    if (waitMs > 5 * 60 * 1000) {
+      logger.warn({ mint, age, minAge, waitMs }, 'Min pool age wait too long — rejecting');
+      return false;
+    }
+
+    logger.info({ mint, age, minAge, waitMs }, 'Waiting for MIN_POOL_AGE_SECONDS before buy');
+    await sleep(waitMs);
+    return true;
+  }
+
+  private async estimateQuoteCapitalRaw(): Promise<bigint> {
+    let capital = 0n;
+    try {
+      const ata = await getAccount(this.connection, this.config.quoteAta, this.connection.commitment);
+      capital += BigInt(ata.amount.toString());
+    } catch {
+      // ATA may not exist yet in dry-run / fresh wallets
+    }
+
+    // If quoting in WSOL, also count native SOL balance (lamports).
+    if (this.config.quoteToken.mint.toBase58() === SOL_MINT) {
+      const lamports = BigInt(await this.connection.getBalance(this.config.wallet.publicKey, this.connection.commitment));
+      capital += lamports;
+    }
+
+    capital += this.positions.totalOpenExposure;
+    return capital;
+  }
+
+  private async capBuyAmount(requested: TokenAmount): Promise<TokenAmount> {
+    const pct = this.config.maxPositionPercent ?? 0;
+    if (pct <= 0) return requested;
+
+    const capital = await this.estimateQuoteCapitalRaw();
+    this.killSwitch.ensureCapitalSnapshot(capital > this.positions.totalOpenExposure ? capital - this.positions.totalOpenExposure : capital);
+
+    if (capital <= 0n) {
+      logger.warn('Quote capital estimate is zero — refusing buy (position size cap)');
+      return new TokenAmount(requested.token, new BN(0), true);
+    }
+
+    const maxRaw = (capital * BigInt(Math.floor(pct * 100))) / 10000n;
+    const requestedRaw = BigInt(requested.raw.toString());
+    if (requestedRaw <= maxRaw) return requested;
+
+    logger.warn(
+      {
+        requested: requestedRaw.toString(),
+        maxRaw: maxRaw.toString(),
+        maxPositionPercent: pct,
+        capital: capital.toString(),
+      },
+      'Capping buy size to MAX_POSITION_PERCENT of estimated quote capital',
+    );
+    return new TokenAmount(requested.token, new BN(maxRaw.toString()), true);
+  }
+
+  private async capPumpFunBuySol(requestedSol: number): Promise<number> {
+    const pct = this.config.maxPositionPercent ?? 0;
+    if (pct <= 0) return requestedSol;
+
+    const capital = await this.estimateQuoteCapitalRaw();
+    if (capital <= 0n) {
+      logger.warn('Quote capital estimate is zero — refusing pump.fun buy (position size cap)');
+      return 0;
+    }
+
+    const maxLamports = (capital * BigInt(Math.floor(pct * 100))) / 10000n;
+    const maxSol = Number(maxLamports) / 1_000_000_000;
+    if (requestedSol <= maxSol) return requestedSol;
+
+    logger.warn(
+      { requestedSol, maxSol, maxPositionPercent: pct },
+      'Capping pump.fun buy size to MAX_POSITION_PERCENT of estimated capital',
+    );
+    return Math.max(0, maxSol);
+  }
+
+  private recordExitAndClose(mint: string, proceedsRaw: bigint | undefined, reason: string): void {
+    const position = this.positions.get(mint);
+    const entry = position?.entryQuoteAmount ?? 0n;
+    const proceeds = proceedsRaw ?? entry; // unknown proceeds => treat as flat (0 pnl)
+    const pnl = proceeds - entry;
+    if (position) {
+      this.killSwitch.recordRealizedPnl(pnl);
+    }
+    this.positions.close(mint);
+    logDecision({
+      ts: new Date().toISOString(),
+      mint,
+      side: 'exit',
+      reason,
+      size: entry.toString(),
+      dryRun: this.config.dryRun,
+      live: this.config.liveTrading && !this.config.dryRun,
+      pnl: pnl.toString(),
+      realizedPnl: pnl.toString(),
+      proceeds: proceeds.toString(),
+      dex: position?.dex,
+    });
+  }
+
+  private skipDecision(mint: string, reason: string, dex?: string): void {
+    logDecision({
+      ts: new Date().toISOString(),
+      mint,
+      side: 'skip',
+      reason,
+      dryRun: this.config.dryRun,
+      live: this.config.liveTrading && !this.config.dryRun,
+      dex,
+    });
   }
 }

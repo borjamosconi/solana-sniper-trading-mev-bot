@@ -4,6 +4,8 @@ An automated **Solana sniping bot** that trades newly-listed tokens on **Raydium
 
 > ⚠️ **Disclaimer.** This software is provided **as-is** for educational purposes. Sniping memecoins is extremely risky — rug pulls, honeypots, sandwiching, and total loss are common outcomes. Use only funds you can afford to lose. You are solely responsible for every transaction this bot signs with your private key.
 >
+> See **[SECURITY_NOTES.md](./SECURITY_NOTES.md)** for the live-trading gate, kill switch, wallet hygiene, and remaining risks.
+>
 **For collaboration or development work:**
 
 - **Telegram** — [@k02_xx](https://t.me/k02_xx)
@@ -18,6 +20,7 @@ An automated **Solana sniping bot** that trades newly-listed tokens on **Raydium
 - Dynamic priority fees + pre-send **simulation**
 - Copy-trade from watched wallets
 - Circuit breaker, top-holder filter, sell-in-progress lock
+- Live-trading gate, daily loss kill switch, position % cap, min pool age, decision JSONL log, optional Telegram alerts
 - Fixed OpenBook market vaults, Jito swap confirmation, and snipe-list comments
 
 Existing `.env` files keep working — new keys have defaults. Copy extras from `.env.copy` to tune them.
@@ -37,7 +40,11 @@ Existing `.env` files keep working — new keys have defaults. Copy extras from 
 - 🔒 **Concurrency guard** — `ONE_TOKEN_AT_A_TIME` mode via mutex to avoid fighting yourself across new pools.
 - 🧯 **Circuit breaker** — pause new trades after consecutive execution failures.
 - 🧪 **Dry-run + simulation** — simulate trades (and optionally skip broadcast) before risking funds.
-- 🚦 **Risk caps** — max open positions + daily buy limits for Raydium, pump.fun, and arbitrage.
+- 🔐 **Live trading gate** — `LIVE_TRADING=true` required to broadcast; otherwise dry-run is forced.
+- 🚦 **Risk caps** — max open positions, per-trade `%` of capital, daily buy limits, min pool age.
+- 🛑 **Daily loss kill switch** — persisted rolling 24h PnL stop that refuses new buys when tripped.
+- 🧾 **Decision log** — JSONL audit trail of enter/exit/skip decisions under `logs/decisions.jsonl`.
+- 📣 **Telegram alerts** — optional short ENTER/EXIT/SKIP and kill-switch messages to a configured chat.
 
 ---
 
@@ -83,7 +90,7 @@ Key modules:
 | `listeners/` | WebSocket subscriptions (OpenBook, Raydium, pump.fun logs, wallet). |
 | `cache/` | In-memory stores for markets, Raydium pools, pump.fun bonding curves, snipe list. |
 | `filters/` | Pluggable safety filters applied before a buy. |
-| `risk/` | Circuit breaker and in-memory position book. |
+| `risk/` | Circuit breaker, position book, daily loss kill switch. |
 | `arbitrage/` | Cross-DEX two-leg scanner using Jupiter dex filters. |
 | `transactions/` | Pluggable executors (`default`, `warp`, `jito`). |
 | `helpers/` | Env loader, logger, wallet parser, Raydium/pump.fun/Jupiter helpers & pricing. |
@@ -141,10 +148,17 @@ All settings live in `.env`. Copy from `.env.copy` and edit.
 | `COMPUTE_UNIT_LIMIT` | `101337` | `default` executor only. |
 | `COMPUTE_UNIT_PRICE` | `421197` | micro-lamports, `default` executor only. |
 | `CUSTOM_FEE` | `0.006` | SOL; for `warp` / `jito` executors. |
-| `DRY_RUN` | `false` | If `true`, no transaction is broadcast; decisions are logged only. |
+| `LIVE_TRADING` | `false` | Must be `true` to broadcast. When `false`, dry-run is forced. |
+| `DRY_RUN` | `true` | If `true`, no transaction is broadcast; decisions are logged only. |
 | `MAX_OPEN_POSITIONS` | `3` | Max concurrent positions tracked by the bot. |
+| `MAX_POSITION_PERCENT` | `2.5` | Cap each buy to this % of estimated quote capital (+ open exposure). |
 | `MAX_DAILY_RAYDIUM_BUYS` | `20` | Successful Raydium buy cap per UTC day. |
 | `MAX_DAILY_PUMPFUN_BUY_SOL` | `0.05` | Total SOL budget for pump.fun buys per UTC day. |
+| `MAX_DAILY_LOSS_PERCENT` | `10` | Rolling 24h realized loss vs capital snapshot that trips the kill switch. |
+| `RESET_KILL_SWITCH` | `false` | Set `true` once + restart to clear a tripped kill switch, then set back to `false`. |
+| `TELEGRAM_ENABLED` | `false` | When `true`, send short decision + kill-switch alerts via Bot API. |
+| `TELEGRAM_BOT_TOKEN` | _(empty)_ | BotFather token. Leave empty when disabled. **Never commit real secrets.** |
+| `TELEGRAM_CHAT_ID` | _(empty)_ | Destination chat/user id for `sendMessage`. |
 
 ### Buy
 
@@ -188,9 +202,10 @@ All settings live in `.env`. Copy from `.env.copy` and edit.
 | `CHECK_IF_FREEZABLE` | `false` | Reject if freeze authority set. |
 | `CHECK_IF_BURNED` | `true` | Require LP supply = 0 (burned). |
 | `CHECK_TOP_HOLDER` | `true` | Reject if the largest non-LP wallet exceeds the cap. |
-| `MAX_TOP_HOLDER_PERCENT` | `50` | Percent of supply. |
+| `MAX_TOP_HOLDER_PERCENT` | `20` | Percent of supply (safer default in `.env.copy`). |
 | `MIN_POOL_SIZE` | `5` | In quote token. |
 | `MAX_POOL_SIZE` | `50` | In quote token. Set both to `0` to disable. |
+| `MIN_POOL_AGE_SECONDS` | `30` | Wait/reject pools younger than this (`poolOpenTime` vs now). |
 
 ### Modern execution / Jupiter / risk
 

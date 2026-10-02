@@ -50,9 +50,14 @@ import {
   PUMP_FUN_MAX_CURVE_PROGRESS,
   PUMP_FUN_PROGRAM_ID,
   DRY_RUN,
+  LIVE_TRADING,
   MAX_OPEN_POSITIONS,
   MAX_DAILY_RAYDIUM_BUYS,
   MAX_DAILY_PUMPFUN_BUY_SOL,
+  MAX_DAILY_LOSS_PERCENT,
+  MAX_POSITION_PERCENT,
+  MIN_POOL_AGE_SECONDS,
+  RESET_KILL_SWITCH,
   TRAILING_STOP,
   TRAILING_STOP_ACTIVATION,
   TAKE_PROFIT_SELL_PERCENT,
@@ -86,7 +91,7 @@ import {
 import { version } from './package.json';
 import { WarpTransactionExecutor } from './transactions/warp-transaction-executor';
 import { JitoTransactionExecutor } from './transactions/jito-rpc-transaction-executor';
-import { CircuitBreaker } from './risk';
+import { CircuitBreaker, DailyLossKillSwitch } from './risk';
 import { ArbitrageEngine } from './arbitrage';
 
 const connection = new Connection(RPC_ENDPOINT, {
@@ -131,11 +136,15 @@ function printDetails(wallet: Keypair, quoteToken: Token, bot: Bot) {
   }
 
   logger.info(`Single token at the time: ${botConfig.oneTokenAtATime}`);
+  logger.info(`Live trading: ${botConfig.liveTrading}`);
   logger.info(`Dry run mode: ${botConfig.dryRun}`);
   logger.info(`Simulate before send: ${botConfig.simulateBeforeSend}`);
   logger.info(`Max open positions: ${botConfig.maxOpenPositions}`);
   logger.info(`Max daily Raydium buys: ${botConfig.maxDailyRaydiumBuys}`);
   logger.info(`Max daily pump.fun buy SOL: ${botConfig.maxDailyPumpFunBuySol}`);
+  logger.info(`Max position percent: ${botConfig.maxPositionPercent}%`);
+  logger.info(`Min pool age: ${botConfig.minPoolAgeSeconds}s`);
+  logger.info(`Max daily loss percent: ${MAX_DAILY_LOSS_PERCENT}%`);
   logger.info(`Pre load existing markets: ${PRE_LOAD_EXISTING_MARKETS}`);
   logger.info(`Cache new markets: ${CACHE_NEW_MARKETS}`);
   logger.info(`Log level: ${LOG_LEVEL}`);
@@ -173,6 +182,7 @@ function printDetails(wallet: Keypair, quoteToken: Token, bot: Bot) {
     logger.info(`Check freezable: ${botConfig.checkFreezable}`);
     logger.info(`Check burned: ${botConfig.checkBurned}`);
     logger.info(`Check top holder: ${CHECK_TOP_HOLDER} (max ${MAX_TOP_HOLDER_PERCENT}%)`);
+    logger.info(`Min pool age: ${botConfig.minPoolAgeSeconds}s`);
     logger.info(`Min pool size: ${botConfig.minPoolSize.toFixed()}`);
     logger.info(`Max pool size: ${botConfig.maxPoolSize.toFixed()}`);
   }
@@ -214,6 +224,7 @@ const runListener = async () => {
   const quoteToken = getToken(QUOTE_MINT);
   const jupiter = new JupiterClient(JUPITER_API_URL, JUPITER_API_KEY || undefined);
   const breaker = new CircuitBreaker(CIRCUIT_BREAKER_MAX_FAILURES, CIRCUIT_BREAKER_PAUSE_MS);
+  const killSwitch = new DailyLossKillSwitch(MAX_DAILY_LOSS_PERCENT, RESET_KILL_SWITCH);
 
   const botConfig = <BotConfig>{
     wallet,
@@ -246,9 +257,12 @@ const runListener = async () => {
     pumpFunBuyAmountSol: PUMP_FUN_BUY_AMOUNT_SOL,
     pumpFunMaxCurveProgress: PUMP_FUN_MAX_CURVE_PROGRESS,
     dryRun: DRY_RUN,
+    liveTrading: LIVE_TRADING,
     maxOpenPositions: MAX_OPEN_POSITIONS,
     maxDailyRaydiumBuys: MAX_DAILY_RAYDIUM_BUYS,
     maxDailyPumpFunBuySol: MAX_DAILY_PUMPFUN_BUY_SOL,
+    maxPositionPercent: MAX_POSITION_PERCENT,
+    minPoolAgeSeconds: MIN_POOL_AGE_SECONDS,
     trailingStop: TRAILING_STOP,
     trailingStopActivation: TRAILING_STOP_ACTIVATION,
     takeProfitSellPercent: TAKE_PROFIT_SELL_PERCENT,
@@ -261,7 +275,7 @@ const runListener = async () => {
     enableJupiterCopyBuy: ENABLE_JUPITER_COPY_BUY,
   };
 
-  const bot = new Bot(connection, marketCache, poolCache, txExecutor, botConfig, pumpFunCache, jupiter, breaker);
+  const bot = new Bot(connection, marketCache, poolCache, txExecutor, botConfig, pumpFunCache, jupiter, breaker, killSwitch);
   const valid = await bot.validate();
 
   if (!valid) {

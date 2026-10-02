@@ -137,3 +137,15 @@ pnpm-lock.yaml
 
 # Visual Studio Code 
 *.code-workspace
+
+# Bot runtime state (PnL kill switch, etc.)
+.bot-state/
+
+# Backtest candle dumps
+backtest/data/*.jsonl
+backtest/data/*.json
+backtest/*.sqlite
+backtest/reports/
+
+# Static paper-dashboard snapshots (may contain your trading data)
+dashboard/snapshots/
